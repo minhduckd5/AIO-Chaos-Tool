@@ -1,0 +1,56 @@
+# AIO Chaos Tool Configuration Example
+# This file demonstrates how to configure the chaos tools
+
+global:
+  log_level: info
+  dry_run: false
+
+modules:
+  # Chaos Toolkit Configuration
+  chaos-toolkit:
+    experiment_path: "./experiments/experiment.json"
+    rollback_enabled: true
+  
+  # Kube-Monkey Configuration
+  kube-monkey:
+    namespace: default
+    enabled: true
+    max_kill: 1
+    kill_value: 50  # Kill 50% of eligible pods
+  
+  # Pumba Configuration
+  pumba:
+    target_containers:
+      - "my-app"
+      - "my-service"
+    interval: "10s"
+  
+  # Chaos Monkey Configuration
+  chaos-monkey:
+    enabled: true
+    schedule_enabled: true
+    accounts:
+      - "prod-account"
+      - "staging-account"
+    regions:
+      - "us-east-1"
+      - "us-west-2"
+  
+  # Toxiproxy Configuration
+  toxiproxy:
+    host: localhost
+    port: 8474
+    proxies:
+      - name: "redis"
+        listen: "0.0.0.0:16379"
+        upstream: "localhost:6379"
+      - name: "postgres"
+        listen: "0.0.0.0:15432"
+        upstream: "localhost:5432"
+  
+  # Muxy Configuration
+  muxy:
+    proxy_host: localhost
+    proxy_port: 8181
+    target_host: localhost
+    target_port: 8080
