@@ -33,9 +33,15 @@ def cmd_list_actions(orchestrator: ChaosOrchestrator, args: argparse.Namespace) 
     """List available actions for modules."""
     if args.module:
         # List actions for specific module
+        module = orchestrator.get_module(args.module)
+        if not module:
+            print(f"Module not found: {args.module}", file=sys.stderr)
+            print(f"Available modules: {', '.join(orchestrator.list_modules())}", file=sys.stderr)
+            return 1
+        
         actions = orchestrator.get_module_actions(args.module)
         if not actions:
-            print(f"Module not found: {args.module}", file=sys.stderr)
+            print(f"Module {args.module} has no available actions", file=sys.stderr)
             return 1
         
         print(f"Available Actions for {args.module}:")

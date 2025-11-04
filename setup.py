@@ -17,6 +17,7 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     author="AIO Chaos Tool Team",
+    author_email="minhduckd5@users.noreply.github.com",
     url="https://github.com/minhduckd5/AIO-Chaos-Tool",
     packages=find_packages(),
     install_requires=[

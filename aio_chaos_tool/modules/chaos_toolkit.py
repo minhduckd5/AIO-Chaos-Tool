@@ -17,8 +17,8 @@ class ChaosToolkitModule(BaseChaosModule):
     
     def validate_config(self) -> bool:
         """Validate Chaos Toolkit configuration."""
-        required_fields = ['experiment_path']
-        return all(field in self.config for field in required_fields)
+        # experiment_path is optional, can be provided at execution time
+        return True
     
     def execute(self, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """

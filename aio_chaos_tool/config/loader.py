@@ -45,7 +45,10 @@ class ConfigLoader:
             elif config_path.endswith('.json'):
                 self.config = json.load(f)
             else:
-                raise ValueError(f"Unsupported configuration format: {config_path}")
+                raise ValueError(
+                    f"Unsupported configuration format: {config_path}. "
+                    "Supported formats: .yaml, .yml, .json"
+                )
         
         return self.config
     

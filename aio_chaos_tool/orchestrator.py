@@ -90,10 +90,25 @@ class ChaosOrchestrator:
         
         try:
             return module.execute(action, params)
+        except KeyError as e:
+            return {
+                'success': False,
+                'error': f'Invalid parameter: {str(e)}',
+                'module': module_name,
+                'action': action
+            }
+        except ValueError as e:
+            return {
+                'success': False,
+                'error': f'Invalid value: {str(e)}',
+                'module': module_name,
+                'action': action
+            }
         except Exception as e:
             return {
                 'success': False,
                 'error': f'Execution failed: {str(e)}',
+                'error_type': type(e).__name__,
                 'module': module_name,
                 'action': action
             }
