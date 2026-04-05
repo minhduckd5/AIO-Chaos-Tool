@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  backend:
+    image: python:3.9-slim
+    command: python -m http.server 8000
+    networks:
+      - chaos-net
+
+  loadbalancer:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend
+    networks:
+      - chaos-net
+
+networks:
+  chaos-net:
+    driver: bridge
+
+
+

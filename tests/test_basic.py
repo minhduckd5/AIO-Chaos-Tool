@@ -3,7 +3,7 @@ Basic tests for AIO Chaos Tool modules.
 """
 
 import pytest
-from aio_chaos_tool.orchestrator import ChaosOrchestrator
+from chaosgen.orchestrator import ChaosOrchestrator
 
 
 def test_orchestrator_initialization():

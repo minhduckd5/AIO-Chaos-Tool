@@ -1,0 +1,15 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: {{ experiment_name | lower | replace(" ", "-") }}
+  namespace: {{ namespace | default("default") }}
+spec:
+  action: pod-kill
+  mode: {{ mode | default("one") }}
+  selector:
+    namespaces:
+      - {{ namespace | default("default") }}
+    labelSelectors:
+      app: {{ target_name }}
+  gracePeriod: {{ grace_period | default(0) }}
+  duration: "{{ duration | default('30s') }}"

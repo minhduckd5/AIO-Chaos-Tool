@@ -1,0 +1,25 @@
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: {{ experiment_name | lower | replace(" ", "-") }}-engine
+  namespace: {{ namespace | default("default") }}
+spec:
+  appinfo:
+    appns: {{ namespace | default("default") }}
+    applabel: "app={{ target_name }}"
+    appkind: deployment
+  engineState: active
+  chaosServiceAccount: litmus-admin
+  experiments:
+    - name: pod-delete
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: "{{ duration_seconds | default(30) }}"
+            - name: CHAOS_INTERVAL
+              value: "{{ interval | default(10) }}"
+            - name: FORCE
+              value: "{{ force | default('false') }}"
+            - name: PODS_AFFECTED_PERC
+              value: "{{ pods_affected_perc | default(100) }}"

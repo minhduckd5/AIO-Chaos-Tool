@@ -1,270 +1,197 @@
-# AIO Chaos Tool
+# ChaosGen
 
-[![License](https://img.shields.io/github/license/minhduckd5/AIO-Chaos-Tool)](LICENSE)
-[![Python Version](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/github/license/minhduckd5/ChaosGen)](LICENSE)
+[![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-**All-In-One Chaos Engineering Tool** - A unified interface for multiple chaos engineering tools, combining the best features of various chaos testing platforms into a single, easy-to-use solution.
+**AI-Driven Chaos Scenario Generator** — Automatically discovers your system architecture, detects the existing observability stack, and uses an LLM pipeline (local Ollama or cloud providers) to generate, rank, and execute targeted chaos experiments with a Human-in-the-Loop approval gate.
 
-## 🎯 Overview
+## Overview
 
-AIO Chaos Tool integrates multiple popular chaos engineering tools into a single framework, allowing you to perform comprehensive chaos testing without switching between different platforms and tools.
+ChaosGen replaces manual chaos scenario authoring with an AI pipeline that:
 
-## 🛠️ Integrated Chaos Tools
+1. **Discovers** your environment (Kubernetes, Docker Compose, Bare Metal, Cloud VM)
+2. **Classifies** your architecture (Microservices, Monolith, Event-Driven, etc.)
+3. **Checks** for Prometheus/Grafana/Loki and bootstraps them if missing
+4. **Generates** context-aware chaos scenarios via LLM (Ollama, OpenAI, Anthropic, Groq)
+5. **Ranks** scenarios by confidence, historical value, coverage gap, and safety margin
+6. **Runs** approved experiments through a state-machine orchestrator with automatic rollback
 
-This project combines the following chaos engineering tools:
+## Integrated Chaos Tools
 
-### 1. **Chaos Toolkit**
-A declarative chaos engineering platform that allows you to define and run chaos experiments using JSON/YAML files.
+ChaosGen wraps six chaos engineering tools behind a unified adapter interface:
 
-### 2. **Kube-Monkey**
-A Kubernetes-native chaos testing tool that randomly terminates pods to test resilience.
+- **Chaos Toolkit** — declarative JSON/YAML experiment runner
+- **Kube-Monkey** — random pod terminator for Kubernetes
+- **Pumba** — Docker container chaos (kill, pause, network delay/loss)
+- **Chaos Monkey** — Netflix's EC2 instance terminator
+- **Toxiproxy** — network chaos proxy (latency, bandwidth, timeout)
+- **Muxy** — HTTP/TCP fault injector
 
-### 3. **Pumba**
-A Docker chaos testing tool that can kill, stop, pause containers, and inject network problems.
-
-### 4. **Chaos Monkey**
-Netflix's original chaos engineering tool for AWS, randomly terminating EC2 instances.
-
-### 5. **Toxiproxy**
-A network chaos simulator that can inject latency, bandwidth limitations, and other network conditions.
-
-### 6. **Muxy**
-A proxy tool for simulating real-world distributed system failures including network issues and HTTP errors.
-
-## 📦 Installation
-
-### From Source
+## Installation
 
 ```bash
-git clone https://github.com/minhduckd5/AIO-Chaos-Tool.git
-cd AIO-Chaos-Tool
-pip install -e .
+git clone https://github.com/minhduckd5/ChaosGen.git
+cd ChaosGen
+pip install -e ".[dev]"
 ```
 
-### Requirements
-
-- Python 3.8 or higher
-- PyYAML 6.0 or higher
-
-## 🚀 Quick Start
-
-### 1. List Available Modules
+For the desktop GUI:
 
 ```bash
-aio-chaos list-modules
+pip install -e ".[gui]"
 ```
 
-### 2. View Available Actions
+## Quick Start
+
+### 1. Discover Your Environment
 
 ```bash
-# List all actions
-aio-chaos list-actions
-
-# List actions for a specific module
-aio-chaos list-actions --module pumba
+chaosgen discover
 ```
 
-### 3. Check Module Status
+Probes for Kubernetes, Docker, and cloud metadata. Classifies architecture and checks observability tools.
+
+### 2. Bootstrap Observability (if missing)
 
 ```bash
-# Check all modules
-aio-chaos status
+# Auto-detect tier and install
+chaosgen bootstrap
 
-# Check specific module
-aio-chaos status --module chaos-toolkit
+# Force a specific tier
+chaosgen bootstrap --tier k8s      # Helm install kube-prometheus-stack
+chaosgen bootstrap --tier docker   # Inject Prometheus/Grafana into docker-compose.yml
+chaosgen bootstrap --tier script   # Generate install_prometheus.sh for bare metal
 ```
 
-### 4. Execute Chaos Actions
+### 3. Generate AI Chaos Scenarios
 
 ```bash
-# Pumba - Kill a container
-aio-chaos execute --module pumba --action kill_container --params '{"container": "my-app", "signal": "SIGKILL"}'
+# Use local Ollama (default — air-gapped, no API cost)
+chaosgen generate --provider ollama --top-n 5
 
-# Toxiproxy - Add latency
-aio-chaos execute --module toxiproxy --action add_latency --params '{"proxy_name": "redis", "latency": 1000, "jitter": 100}'
+# Use OpenAI GPT-4o
+chaosgen generate --provider openai --top-n 5
 
-# Kube-Monkey - Terminate pods
-aio-chaos execute --module kube-monkey --action terminate_pods --params '{"namespace": "production", "count": 2}'
+# Pull from the pre-built scenario catalog (no LLM required)
+chaosgen generate --from-catalog --arch microservices
 
-# Muxy - Inject HTTP errors
-aio-chaos execute --module muxy --action inject_http_error --params '{"status_code": 500, "rate": 0.1}'
+# Override detected architecture
+chaosgen generate --provider anthropic --arch event_driven --top-n 3
 ```
 
-## ⚙️ Configuration
+### 4. Run Approved Experiments (HITL Gate)
 
-Create a configuration file (YAML or JSON) to customize module settings:
+```bash
+# Review and approve/reject each scenario interactively
+chaosgen run
+
+# Dry run — validate without executing
+chaosgen run --dry-run
+```
+
+### 5. Evaluate Results
+
+```bash
+# KPI report
+chaosgen evaluate
+
+# A/B comparison: AI-generated vs human-designed
+chaosgen evaluate --ab
+
+# Export
+chaosgen evaluate --export csv
+```
+
+## Configuration
+
+### API Keys (for cloud LLM providers)
+
+Store keys in `~/.chaosgen/.env` (auto-created on first save from the Settings tab):
+
+```env
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+GROQ_API_KEY=gsk_...
+OLLAMA_URL=http://localhost:11434
+```
+
+The file is enforced to `chmod 600` on Linux/macOS. Ollama requires no key and is the default provider.
+
+### Experiment Configuration
 
 ```yaml
 # config.yaml
 global:
   log_level: info
   dry_run: false
+  safety:
+    max_blast_radius_pods_pct: 20
+    blocked_namespaces:
+      - kube-system
+      - monitoring
+
+advisor:
+  llm_provider: ollama          # ollama | openai | anthropic | groq
+  llm_model: llama3.2:3b
+  confidence_threshold: 0.6
+  top_n_scenarios: 5
 
 modules:
-  chaos-toolkit:
-    experiment_path: "./experiments/experiment.json"
-    rollback_enabled: true
-  
-  kube-monkey:
-    namespace: default
-    enabled: true
-    max_kill: 1
-    kill_value: 50
-  
   pumba:
-    target_containers:
-      - "my-app"
-      - "my-service"
-    interval: "10s"
-  
+    target_containers: ["my-app"]
   toxiproxy:
     host: localhost
     port: 8474
-    proxies:
-      - name: "redis"
-        listen: "0.0.0.0:16379"
-        upstream: "localhost:6379"
 ```
 
-Use the configuration file:
+## Architecture
+
+```
+chaosgen/
+├── cli.py                    # Click command groups
+├── orchestrator.py           # State-machine engine + HITL gate
+├── discovery/                # Environment + architecture detection
+│   ├── environment_probe.py
+│   ├── architecture_classifier.py
+│   ├── service_mapper.py
+│   └── observability_probe.py
+├── bootstrap/                # Observability auto-install
+│   ├── exceptions.py
+│   ├── observability_installer.py
+│   └── connection_verifier.py
+├── advisor/                  # AI scenario generation pipeline
+│   ├── context_builder.py
+│   ├── llm_advisor.py        # Multi-provider (Ollama/OpenAI/Anthropic/Groq)
+│   ├── scenario_catalog.py   # Pre-built scenarios by architecture type
+│   ├── scenario_generator.py
+│   ├── scenario_ranker.py
+│   └── manifest_writer.py
+├── ml/                       # Anomaly detection (IsolationForest + KMeans)
+├── ingestion/                # Prometheus + Loki telemetry clients
+├── modules/                  # Chaos tool adapters
+├── schemas/                  # Pydantic data models
+│   └── discovery.py          # EnvironmentProfile, ServiceMap, etc.
+├── safety/                   # Blast radius + dead man's switch
+├── evaluation/               # KPI tracker + A/B comparator
+├── config/
+│   └── secrets.py            # .env-based API key management
+├── ucal/                     # Universal Chaos Abstraction Layer
+└── gui/                      # PySide6 desktop application
+```
+
+## Docker
 
 ```bash
-aio-chaos --config config.yaml status
+# Build
+docker build -t chaosgen:dev .
+
+# Run tests
+docker run --rm -t chaosgen:dev pytest -q
+
+# Development mount
+docker compose --profile dev run --rm chaosgen_dev pytest -q
 ```
 
-## 📖 Usage Examples
+## License
 
-### Example 1: Network Chaos with Toxiproxy
-
-```bash
-# Create a proxy
-aio-chaos execute --module toxiproxy --action create_proxy \
-  --params '{"name": "redis", "listen": "0.0.0.0:16379", "upstream": "localhost:6379"}'
-
-# Add latency
-aio-chaos execute --module toxiproxy --action add_latency \
-  --params '{"proxy_name": "redis", "latency": 1000, "jitter": 100}'
-
-# Add bandwidth limit
-aio-chaos execute --module toxiproxy --action add_bandwidth_limit \
-  --params '{"proxy_name": "redis", "rate": 1000}'
-```
-
-### Example 2: Container Chaos with Pumba
-
-```bash
-# Kill a container
-aio-chaos execute --module pumba --action kill_container \
-  --params '{"container": "my-app"}'
-
-# Pause a container
-aio-chaos execute --module pumba --action pause_container \
-  --params '{"container": "my-app", "duration": "30s"}'
-
-# Add network delay
-aio-chaos execute --module pumba --action delay_network \
-  --params '{"container": "my-app", "delay": "100ms"}'
-```
-
-### Example 3: Kubernetes Chaos with Kube-Monkey
-
-```bash
-# Terminate pods
-aio-chaos execute --module kube-monkey --action terminate_pods \
-  --params '{"namespace": "production", "count": 2}'
-
-# Schedule termination
-aio-chaos execute --module kube-monkey --action schedule_termination \
-  --params '{"namespace": "staging", "schedule": "random"}'
-```
-
-## 🏗️ Architecture
-
-```
-aio_chaos_tool/
-├── __init__.py          # Package initialization
-├── cli.py               # Command-line interface
-├── orchestrator.py      # Main orchestrator
-├── modules/             # Chaos tool integrations
-│   ├── base.py          # Base module class
-│   ├── chaos_toolkit.py
-│   ├── kube_monkey.py
-│   ├── pumba.py
-│   ├── chaos_monkey.py
-│   ├── toxiproxy.py
-│   └── muxy.py
-├── config/              # Configuration management
-│   └── loader.py
-└── utils/               # Utility functions
-```
-
-## 🎯 Available Actions by Module
-
-### Chaos Toolkit
-- `run_experiment` - Run a chaos experiment
-- `validate` - Validate an experiment file
-- `discover` - Discover available actions
-
-### Kube-Monkey
-- `terminate_pods` - Randomly terminate pods
-- `schedule_termination` - Schedule pod terminations
-- `get_victims` - Get list of potential victim pods
-
-### Pumba
-- `kill_container` - Kill a Docker container
-- `pause_container` - Pause a Docker container
-- `stop_container` - Stop a Docker container
-- `delay_network` - Add network delay
-- `loss_network` - Add network packet loss
-- `rate_limit` - Limit network rate
-
-### Chaos Monkey
-- `terminate_instance` - Terminate an EC2 instance
-- `schedule_termination` - Schedule instance terminations
-- `enable` - Enable Chaos Monkey
-- `disable` - Disable Chaos Monkey
-
-### Toxiproxy
-- `add_latency` - Add latency to network calls
-- `add_bandwidth_limit` - Limit bandwidth
-- `add_slow_close` - Slow down connection closing
-- `add_timeout` - Add timeouts
-- `add_slicer` - Slice data into smaller chunks
-- `create_proxy` - Create a new proxy
-- `delete_proxy` - Delete a proxy
-
-### Muxy
-- `inject_latency` - Inject network latency
-- `inject_http_error` - Inject HTTP error responses
-- `inject_tcp_reset` - Inject TCP connection reset
-- `inject_throttle` - Throttle bandwidth
-- `inject_disruption` - Inject random disruptions
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## ⚠️ Important Notes
-
-**This is a simulation framework.** The current implementation provides a unified interface to various chaos engineering tools, but does not include the actual chaos tool executables. To use real chaos injection:
-
-1. Install the individual chaos tools you want to use (chaostoolkit, pumba, etc.)
-2. Configure the tools according to their documentation
-3. Use AIO Chaos Tool as a unified control interface
-
-## 🔗 Related Projects
-
-- [Chaos Toolkit](https://chaostoolkit.org/)
-- [Kube-Monkey](https://github.com/asobti/kube-monkey)
-- [Pumba](https://github.com/alexei-led/pumba)
-- [Chaos Monkey](https://github.com/Netflix/chaosmonkey)
-- [Toxiproxy](https://github.com/Shopify/toxiproxy)
-- [Muxy](https://github.com/mefellows/muxy)
-
-## 📞 Support
-
-For issues, questions, or contributions, please visit the [GitHub repository](https://github.com/minhduckd5/AIO-Chaos-Tool).
+MIT License — see [LICENSE](LICENSE) for details.

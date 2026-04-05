@@ -1,0 +1,24 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: {{ experiment_name | lower | replace(" ", "-") }}
+  namespace: {{ namespace | default("default") }}
+spec:
+  action: {{ action | default("delay") }}
+  mode: {{ mode | default("one") }}
+  selector:
+    namespaces:
+      - {{ namespace | default("default") }}
+    labelSelectors:
+      app: {{ target_name }}
+  {% if action == "delay" %}
+  delay:
+    latency: "{{ latency | default('100ms') }}"
+    jitter: "{{ jitter | default('0ms') }}"
+    correlation: "{{ correlation | default('0') }}"
+  {% elif action == "loss" %}
+  loss:
+    loss: "{{ loss_percent | default('10') }}"
+    correlation: "{{ correlation | default('0') }}"
+  {% endif %}
+  duration: "{{ duration | default('30s') }}"

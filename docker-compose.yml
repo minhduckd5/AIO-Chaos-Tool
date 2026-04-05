@@ -1,0 +1,15 @@
+services:
+  chaosgen:
+    build:
+      context: .
+    image: chaosgen:dev
+    command: ["bash"]
+
+  chaosgen_dev:
+    profiles: ["dev"]
+    build:
+      context: .
+    image: chaosgen:dev
+    command: ["bash"]
+    volumes:
+      - ./:/app

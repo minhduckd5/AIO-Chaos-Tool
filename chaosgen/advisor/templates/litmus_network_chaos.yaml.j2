@@ -1,0 +1,29 @@
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: {{ experiment_name | lower | replace(" ", "-") }}-engine
+  namespace: {{ namespace | default("default") }}
+spec:
+  appinfo:
+    appns: {{ namespace | default("default") }}
+    applabel: "app={{ target_name }}"
+    appkind: deployment
+  engineState: active
+  chaosServiceAccount: litmus-admin
+  experiments:
+    - name: pod-network-latency
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: "{{ duration_seconds | default(30) }}"
+            - name: NETWORK_INTERFACE
+              value: "{{ interface | default('eth0') }}"
+            - name: NETWORK_LATENCY
+              value: "{{ latency_ms | default(100) }}"
+            - name: JITTER
+              value: "{{ jitter_ms | default(0) }}"
+            - name: CONTAINER_RUNTIME
+              value: "{{ container_runtime | default('containerd') }}"
+            - name: DESTINATION_IPS
+              value: "{{ destination_ips | default('') }}"
