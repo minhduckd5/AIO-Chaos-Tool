@@ -192,6 +192,10 @@ docker run --rm -t chaosgen:dev pytest -q
 docker compose --profile dev run --rm chaosgen_dev pytest -q
 ```
 
+## Documentation
+
+- **[IT Project Proposal](docs/IT_PROJECT_PROPOSAL.md)** — Technical architecture, data flows, API contracts, DevOps, security matrix, roadmap, and risk analysis (for thesis defense / technical review).
+
 ## License
 
 MIT License — see [LICENSE](LICENSE) for details.
