@@ -35,10 +35,10 @@ class _ScanWorker(QThread):
     def run(self) -> None:
         try:
             from chaosgen.config.settings import load_settings
-            from chaosgen.discovery import run_full_discovery
+            from chaosgen.discovery import resolve_discovery_report
 
             settings = load_settings(self._config_path)
-            report = run_full_discovery(settings=settings)
+            report = resolve_discovery_report(settings=settings)
             self.finished.emit(report)
         except Exception as exc:
             logger.exception("Discovery scan failed")
@@ -93,17 +93,24 @@ class DiscoveryView(QWidget):
         title.setObjectName("viewTitle")
         root.addWidget(title)
 
-        subtitle = QLabel(
-            "Hybrid discovery: reads hints from settings.yaml, probes endpoints "
-            "with auth, and merges user overrides with auto-detection."
-        )
+        from chaosgen.config.scope import DISCOVERY_ENABLED, scope_notice
+
+        if DISCOVERY_ENABLED:
+            subtitle_text = (
+                "Hybrid discovery: reads hints from settings.yaml, probes endpoints "
+                "with auth, and merges user overrides with auto-detection."
+            )
+        else:
+            subtitle_text = scope_notice()
+        subtitle = QLabel(subtitle_text)
         subtitle.setWordWrap(True)
         subtitle.setObjectName("viewSubtitle")
         root.addWidget(subtitle)
 
         # --- Action buttons ---
         btn_row = QHBoxLayout()
-        self._scan_btn = QPushButton("Scan System")
+        scan_label = "Scan System" if DISCOVERY_ENABLED else "Load Microservices Profile"
+        self._scan_btn = QPushButton(scan_label)
         self._scan_btn.setObjectName("primaryButton")
         self._scan_btn.clicked.connect(self._on_scan)
         btn_row.addWidget(self._scan_btn)

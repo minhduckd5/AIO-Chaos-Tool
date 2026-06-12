@@ -89,6 +89,12 @@ class TelemetryCollector:
         custom_queries: Optional[Dict[str, str]],
     ) -> List[TimeSeries]:
         all_series = self.prometheus.query_golden_signals(start, end, step)
+        if not all_series:
+            logger.warning(
+                "Golden-signal PromQL returned 0 series (http_requests_total / container_* "
+                "may not exist on this Prometheus). Falling back to infra/OTel metrics."
+            )
+            all_series = self.prometheus.query_fallback_infra(start, end, step)
 
         if custom_queries:
             for name, promql in custom_queries.items():

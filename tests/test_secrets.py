@@ -34,7 +34,7 @@ def isolated_secrets_dir(tmp_path, monkeypatch):
     monkeypatch.setattr("chaosgen.config.secrets._ENV_FILE", fake_env)
 
     for key in (
-        "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "OLLAMA_URL",
+        "OPENAI_API_KEY", "OPENAI_BASE_URL", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "OLLAMA_URL",
         "PROMETHEUS_TOKEN", "LOKI_TOKEN", "GRAFANA_PASSWORD", "JAEGER_TOKEN",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -42,7 +42,7 @@ def isolated_secrets_dir(tmp_path, monkeypatch):
     yield
 
     for key in (
-        "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "OLLAMA_URL",
+        "OPENAI_API_KEY", "OPENAI_BASE_URL", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "OLLAMA_URL",
         "PROMETHEUS_TOKEN", "LOKI_TOKEN", "GRAFANA_PASSWORD", "JAEGER_TOKEN",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -145,3 +145,44 @@ class TestPermissions:
             _validate_permissions(env_file)
 
         assert len(w) == 0
+
+
+class TestProviderCredentialStatus:
+    def test_ollama_always_ready_with_default_url(self):
+        from chaosgen.config.secrets import provider_credential_status
+
+        ready, msg = provider_credential_status("ollama")
+        assert ready is True
+        assert "Ollama URL" in msg
+
+    def test_openai_missing_key(self):
+        from chaosgen.config.secrets import provider_credential_status
+
+        ready, msg = provider_credential_status("openai")
+        assert ready is False
+        assert "OPENAI_API_KEY" in msg
+
+    def test_anthropic_key_configured(self, monkeypatch):
+        from chaosgen.config.secrets import provider_credential_status, save_secret
+
+        save_secret("ANTHROPIC_API_KEY", "sk-ant-test")
+        ready, msg = provider_credential_status("anthropic")
+        assert ready is True
+        assert "ANTHROPIC_API_KEY" in msg
+
+    def test_openai_shows_base_url_when_set(self):
+        from chaosgen.config.secrets import provider_credential_status, save_secret
+
+        save_secret("OPENAI_API_KEY", "sk-test")
+        save_secret("OPENAI_BASE_URL", "http://9router.local/v1")
+        ready, msg = provider_credential_status("openai")
+        assert ready is True
+        assert "9router.local" in msg
+
+    def test_load_secrets_reads_file_after_save_without_stale_env(self, monkeypatch):
+        from chaosgen.config.secrets import load_secrets, save_secret
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        save_secret("OPENAI_API_KEY", "sk-from-file")
+        secrets = load_secrets()
+        assert secrets["OPENAI_API_KEY"] == "sk-from-file"

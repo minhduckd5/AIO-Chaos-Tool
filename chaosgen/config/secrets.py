@@ -25,8 +25,15 @@ logger = logging.getLogger(__name__)
 _CHAOSGEN_DIR = CONFIG_DIR
 _ENV_FILE = SECRETS_FILE
 
+_PROVIDER_API_KEYS: dict[str, str] = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "groq": "GROQ_API_KEY",
+}
+
 _KNOWN_KEYS = {
     "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
     "ANTHROPIC_API_KEY",
     "GROQ_API_KEY",
     "OLLAMA_URL",
@@ -58,22 +65,74 @@ class MissingAPIKeyError(ValueError):
 # ---------------------------------------------------------------------------
 
 
+def _parse_env_file(path: Path) -> dict[str, str]:
+    """Read key=value pairs from the secrets file (source of truth)."""
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip()
+    return values
+
+
 def load_secrets() -> dict[str, str | None]:
     """
-    Load secrets from ~/.chaosgen/.env.
-    Validates file permissions on Linux/macOS.
-    Returns a dict of known key names → values (None if not set).
+    Load secrets from the XDG config .env file.
+    File values take precedence over stale os.environ entries.
     """
     if _ENV_FILE.exists():
         _validate_permissions(_ENV_FILE)
-        _load_env_file(_ENV_FILE)
+
+    file_vals = _parse_env_file(_ENV_FILE)
+    for key in _KNOWN_KEYS:
+        if key in file_vals:
+            os.environ[key] = file_vals[key]
+
+    def _get(name: str, default: str | None = None) -> str | None:
+        return file_vals.get(name) or os.environ.get(name) or default
 
     return {
-        "OPENAI_API_KEY":    os.environ.get("OPENAI_API_KEY"),
-        "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY"),
-        "GROQ_API_KEY":      os.environ.get("GROQ_API_KEY"),
-        "OLLAMA_URL":        os.environ.get("OLLAMA_URL", "http://localhost:11434"),
+        "OPENAI_API_KEY":    _get("OPENAI_API_KEY"),
+        "OPENAI_BASE_URL":   _get("OPENAI_BASE_URL"),
+        "ANTHROPIC_API_KEY": _get("ANTHROPIC_API_KEY"),
+        "GROQ_API_KEY":      _get("GROQ_API_KEY"),
+        "OLLAMA_URL":        _get("OLLAMA_URL", "http://localhost:11434"),
+        "PROMETHEUS_TOKEN":  _get("PROMETHEUS_TOKEN"),
+        "LOKI_TOKEN":        _get("LOKI_TOKEN"),
+        "GRAFANA_PASSWORD":  _get("GRAFANA_PASSWORD"),
+        "JAEGER_TOKEN":      _get("JAEGER_TOKEN"),
     }
+
+
+def provider_credential_status(provider: str) -> tuple[bool, str]:
+    """
+    Return (ready, message) for an LLM provider.
+    Cloud providers use official SDK endpoints — only API keys are required.
+    Ollama uses OLLAMA_URL (no API key).
+    """
+    name = provider.lower()
+    secrets = load_secrets()
+    if name == "ollama":
+        url = secrets.get("OLLAMA_URL") or "http://localhost:11434"
+        return True, f"Ollama URL: {url} — change in Settings → Local Ollama"
+    key_name = _PROVIDER_API_KEYS.get(name)
+    if not key_name:
+        return False, f"Unknown provider '{provider}'"
+    if secrets.get(key_name):
+        base = secrets.get("OPENAI_BASE_URL") if name == "openai" else None
+        msg = f"{key_name} is set — manage in Settings → Cloud LLM Providers"
+        if base:
+            msg += f" | Base URL: {base}"
+        return True, msg
+    return (
+        False,
+        f"{key_name} not configured. Open Settings → Cloud LLM Providers, "
+        f"or run: chaosgen config set-key {key_name} <your-key>",
+    )
 
 
 def get_key(key_name: str, provider: str | None = None) -> str:
@@ -121,6 +180,7 @@ def save_secret(key: str, value: str) -> None:
         lines.append(f"{key}={value}")
 
     _ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.environ[key] = value
 
     # Enforce restrictive permissions on POSIX systems
     if os.name != "nt":
@@ -139,6 +199,7 @@ def delete_secret(key: str) -> None:
         if not line.startswith(f"{key}=")
     ]
     _ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.environ.pop(key, None)
     if os.name != "nt":
         _ENV_FILE.chmod(0o600)
 

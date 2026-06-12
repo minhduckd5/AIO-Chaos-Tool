@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
 from abc import ABC, abstractmethod
 from typing import Any
+from urllib.parse import urlparse
 
 from chaosgen.advisor.context_builder import ScenarioContext
 from chaosgen.config.secrets import MissingAPIKeyError, get_key, load_secrets
@@ -29,6 +31,29 @@ from chaosgen.schemas.faults import FaultType
 from chaosgen.schemas.scenarios import AnomalySummary, FaultHypothesis
 
 logger = logging.getLogger(__name__)
+
+
+def _tcp_probe_base_url(base_url: str | None) -> tuple[bool, str]:
+    """Low-level socket check before OpenAI SDK calls (clearer than 'Connection error')."""
+    if not base_url:
+        return True, "official OpenAI API (no local base URL)"
+    parsed = urlparse(base_url.strip())
+    host = parsed.hostname
+    if not host:
+        return False, f"invalid base URL: {base_url!r}"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        with socket.create_connection((host, port), timeout=8):
+            pass
+        return True, f"TCP reachable {host}:{port}"
+    except OSError as exc:
+        hint = ""
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            hint = (
+                f" — if 9router runs on this PC, try http://127.0.0.1:{port}/v1 "
+                f"instead of {host}; ensure Tailscale/VPN is connected if using a tailnet IP"
+            )
+        return False, f"TCP failed {host}:{port}: {exc}{hint}"
 
 MAX_RETRIES = 2
 
@@ -141,7 +166,12 @@ class LLMProvider(ABC):
 
     def health_check(self) -> bool:
         """Override in providers that support health checking."""
-        return True
+        ok, _ = self.probe()
+        return ok
+
+    def probe(self) -> tuple[bool, str]:
+        """Connectivity probe with a human-readable status message."""
+        return True, "OK"
 
 
 # ---------------------------------------------------------------------------
@@ -205,19 +235,19 @@ class OllamaProvider(LLMProvider):
         resp.raise_for_status()
         return json.loads(resp.json()["message"]["content"])
 
-    def health_check(self) -> bool:
+    def probe(self) -> tuple[bool, str]:
         try:
             import requests
-            resp = requests.get(f"{self.base_url}/api/tags", timeout=5)
+            resp = requests.get(f"{self.base_url}/api/tags", timeout=10)
             if resp.status_code != 200:
-                return False
+                return False, f"HTTP {resp.status_code} from {self.base_url}/api/tags"
             models = [m["name"] for m in resp.json().get("models", [])]
             available = any(self.model in m for m in models)
             if not available:
-                logger.warning("Model '%s' not in Ollama. Available: %s", self.model, models)
-            return available
-        except Exception:
-            return False
+                return False, f"model {self.model!r} not in Ollama (available: {models[:5]})"
+            return True, f"Ollama OK @ {self.base_url} (model={self.model})"
+        except Exception as exc:
+            return False, str(exc)
 
 
 # ---------------------------------------------------------------------------
@@ -226,13 +256,72 @@ class OllamaProvider(LLMProvider):
 
 
 class OpenAIProvider(LLMProvider):
-    def __init__(self, model: str = "gpt-4o", temperature: float = 0.2) -> None:
+    def __init__(
+        self,
+        model: str = "gpt-4o",
+        temperature: float = 0.2,
+        base_url: str | None = None,
+    ) -> None:
         api_key = get_key("OPENAI_API_KEY", provider="openai")  # raises MissingAPIKeyError if absent
+        secrets = load_secrets()
+        effective_base = (base_url or secrets.get("OPENAI_BASE_URL") or "").strip() or None
         import instructor
         from openai import OpenAI  # type: ignore
-        self._client = instructor.from_openai(OpenAI(api_key=api_key))
+
+        client_kwargs: dict[str, Any] = {"api_key": api_key, "timeout": 60.0}
+        if effective_base:
+            client_kwargs["base_url"] = effective_base.rstrip("/")
+        self._openai = OpenAI(**client_kwargs)
+        self._client = instructor.from_openai(self._openai)
         self.model = model
         self.temperature = temperature
+        self.base_url = effective_base
+
+    def probe(self) -> tuple[bool, str]:
+        """
+        OpenAI-compatible routers (e.g. 9router) often lack a working /models list.
+        Fall back to a minimal chat completion using the configured model/combo name.
+        """
+        base_label = self.base_url or "https://api.openai.com/v1"
+        errors: list[str] = []
+
+        tcp_ok, tcp_msg = _tcp_probe_base_url(self.base_url)
+        if not tcp_ok:
+            logger.warning("OpenAI TCP probe failed: %s", tcp_msg)
+            return False, tcp_msg
+
+        try:
+            self._openai.models.list()
+            return True, f"models.list OK @ {base_label}"
+        except Exception as exc:
+            errors.append(f"models.list: {exc}")
+            logger.warning("OpenAI models.list failed: %s", exc)
+
+        try:
+            resp = self._openai.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": "Reply with the single word OK."}],
+                max_tokens=16,
+                temperature=0,
+            )
+            reply = (resp.choices[0].message.content or "").strip()[:60]
+            return True, f"chat OK (model={self.model!r} @ {base_label}, reply={reply!r})"
+        except Exception as exc:
+            errors.append(f"chat({self.model!r}): {exc}")
+            logger.warning("OpenAI chat probe failed: %s", exc)
+
+        detail = "; ".join(errors)
+        lowered = detail.lower()
+        if "connection" in lowered or "connect" in lowered:
+            detail += (
+                " — cannot reach host from this PC (check Tailscale/VPN, firewall, "
+                "or that 9router is listening on the configured IP:port)"
+            )
+        elif "401" in lowered or "unauthorized" in lowered:
+            detail += " — invalid API key for this router"
+        elif "404" in lowered and "model" in lowered:
+            detail += f" — model/combo {self.model!r} not found on router"
+        return False, detail
 
     def complete(self, system_prompt: str, user_prompt: str, response_model: type) -> Any:
         return self._client.chat.completions.create(

@@ -1,0 +1,46 @@
+"""
+Resolve Prometheus / Loki base URLs for live ingestion.
+
+Priority: settings.yaml observability hints → registry-vm defaults.
+"""
+
+from __future__ import annotations
+
+from chaosgen.config.settings import ChaosGenSettings, ChaosGenSettings as Settings
+from chaosgen.schemas.discovery import ObservabilityProfile, ObservabilityTool
+
+# MODIFIED: Default live stack for microservices-demo registry-vm
+DEFAULT_REGISTRY_IP = "192.168.31.220"
+DEFAULT_PROMETHEUS_URL = f"http://{DEFAULT_REGISTRY_IP}:9090"
+DEFAULT_LOKI_URL = f"http://{DEFAULT_REGISTRY_IP}:3100"
+
+
+def resolve_prometheus_url(settings: ChaosGenSettings | None = None) -> str:
+    for hint in (settings.hints.observability if settings else []):
+        if hint.tool == ObservabilityTool.PROMETHEUS:
+            return hint.url.rstrip("/")
+    return DEFAULT_PROMETHEUS_URL
+
+
+def resolve_loki_url(settings: ChaosGenSettings | None = None) -> str:
+    for hint in (settings.hints.observability if settings else []):
+        if hint.tool == ObservabilityTool.LOKI:
+            return hint.url.rstrip("/")
+    return DEFAULT_LOKI_URL
+
+
+def build_observability_profile(settings: Settings | None = None) -> ObservabilityProfile:
+    """Observability profile for microservices-focused pipeline (live endpoints)."""
+    prom = resolve_prometheus_url(settings)
+    loki = resolve_loki_url(settings)
+    detected = [ObservabilityTool.PROMETHEUS, ObservabilityTool.LOKI]
+    missing = [t for t in ObservabilityTool if t not in detected]
+    return ObservabilityProfile(
+        has_metrics=True,
+        metrics_endpoint=prom,
+        has_logs=True,
+        logs_endpoint=loki,
+        has_traces=False,
+        detected=detected,
+        missing=missing,
+    )

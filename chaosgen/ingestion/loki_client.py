@@ -16,9 +16,15 @@ LOG_LEVEL_PATTERN = re.compile(
 class LokiClient:
     """Wraps the Loki HTTP API for log ingestion."""
 
-    def __init__(self, base_url: str, timeout: int = 30):
+    def __init__(self, base_url: str, timeout: int = 30, bearer_token: str | None = None):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.bearer_token = bearer_token
+
+    def _headers(self) -> dict[str, str]:
+        if not self.bearer_token:
+            return {}
+        return {"Authorization": f"Bearer {self.bearer_token}"}
 
     def query(self, logql: str, limit: int = 1000) -> List[LogEntry]:
         """Execute an instant LogQL query."""
@@ -26,6 +32,7 @@ class LokiClient:
             resp = requests.get(
                 f"{self.base_url}/loki/api/v1/query",
                 params={"query": logql, "limit": limit},
+                headers=self._headers(),
                 timeout=self.timeout,
             )
             resp.raise_for_status()
@@ -57,6 +64,7 @@ class LokiClient:
                     "end": int(end * 1e9),
                     "limit": limit,
                 },
+                headers=self._headers(),
                 timeout=self.timeout,
             )
             resp.raise_for_status()
@@ -72,11 +80,19 @@ class LokiClient:
             return []
 
     def health_check(self) -> bool:
+        ok, _ = self.probe()
+        return ok
+
+    def probe(self) -> tuple[bool, str]:
         try:
             resp = requests.get(f"{self.base_url}/ready", timeout=5)
-            return resp.status_code == 200
-        except requests.RequestException:
-            return False
+            if resp.status_code == 401:
+                return False, "401 Unauthorized — set Loki Token in Settings"
+            if resp.status_code != 200:
+                return False, f"HTTP {resp.status_code}"
+            return True, "OK"
+        except requests.RequestException as exc:
+            return False, f"unreachable ({exc})"
 
     @staticmethod
     def _extract_level(message: str) -> Optional[str]:

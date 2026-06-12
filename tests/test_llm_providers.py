@@ -37,6 +37,61 @@ class TestBuildProvider:
         with pytest.raises(ValueError, match="Unknown provider"):
             build_provider("badprovider")
 
+    def test_openai_uses_custom_base_url(self):
+        from chaosgen.advisor.llm_advisor import OpenAIProvider
+
+        with patch("chaosgen.advisor.llm_advisor.get_key", return_value="sk-test"):
+            with patch(
+                "chaosgen.advisor.llm_advisor.load_secrets",
+                return_value={"OPENAI_BASE_URL": "http://9router.local/v1"},
+            ):
+                with patch("openai.OpenAI") as mock_openai:
+                    with patch("instructor.from_openai", return_value=MagicMock()):
+                        OpenAIProvider(model="openclaw-coding")
+        mock_openai.assert_called_once_with(
+            api_key="sk-test",
+            base_url="http://9router.local/v1",
+            timeout=60.0,
+        )
+
+    def test_openai_probe_fails_fast_when_tcp_unreachable(self):
+        from chaosgen.advisor.llm_advisor import OpenAIProvider
+
+        with patch("chaosgen.advisor.llm_advisor.get_key", return_value="sk-test"):
+            with patch(
+                "chaosgen.advisor.llm_advisor.load_secrets",
+                return_value={"OPENAI_BASE_URL": "http://100.99.206.5:20128/v1"},
+            ):
+                with patch("chaosgen.advisor.llm_advisor._tcp_probe_base_url", return_value=(False, "TCP failed")):
+                    with patch("openai.OpenAI"):
+                        with patch("instructor.from_openai", return_value=MagicMock()):
+                            provider = OpenAIProvider(model="gh/claude-opus-4.5")
+
+        ok, msg = provider.probe()
+        assert ok is False
+        assert "TCP failed" in msg
+
+    def test_openai_probe_falls_back_to_chat_when_models_list_fails(self):
+        from chaosgen.advisor.llm_advisor import OpenAIProvider
+
+        mock_client = MagicMock()
+        mock_client.models.list.side_effect = RuntimeError("not implemented")
+        mock_resp = MagicMock()
+        mock_resp.choices = [MagicMock(message=MagicMock(content="OK"))]
+        mock_client.chat.completions.create.return_value = mock_resp
+
+        with patch("chaosgen.advisor.llm_advisor.get_key", return_value="sk-test"):
+            with patch("chaosgen.advisor.llm_advisor.load_secrets", return_value={}):
+                with patch("chaosgen.advisor.llm_advisor._tcp_probe_base_url", return_value=(True, "TCP OK")):
+                    with patch("openai.OpenAI", return_value=mock_client):
+                        with patch("instructor.from_openai", return_value=MagicMock()):
+                            provider = OpenAIProvider(model="openclaw-coding")
+
+        ok, msg = provider.probe()
+        assert ok is True
+        assert "chat OK" in msg
+        mock_client.chat.completions.create.assert_called_once()
+
 
 class TestArchitectureSpecificPrompts:
     def test_microservices_prompt_mentions_cascade(self):

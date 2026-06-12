@@ -86,7 +86,9 @@ class DashboardView(QWidget):
         title.setObjectName("sectionTitle")
         layout.addWidget(title)
 
-        subtitle = QLabel("Chaos engineering control plane overview")
+        subtitle = QLabel(
+            "Microservices-focused pipeline — use Telemetry for live/export analysis"
+        )
         subtitle.setObjectName("sectionSubtitle")
         layout.addWidget(subtitle)
 

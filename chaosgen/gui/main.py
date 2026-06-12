@@ -28,6 +28,7 @@ from chaosgen.gui.views.modules_view import ModulesView
 from chaosgen.gui.views.experiments_view import ExperimentsView
 from chaosgen.gui.views.advisor_view import AdvisorView
 from chaosgen.gui.views.evaluation_view import EvaluationView
+from chaosgen.config.scope import DISCOVERY_ENABLED
 from chaosgen.gui.views.discovery_view import DiscoveryView
 from chaosgen.gui.views.scenario_catalog_view import ScenarioCatalogView
 from chaosgen.gui.views.settings_view import SettingsView
@@ -212,12 +213,14 @@ class MainWindow(FramelessWindow):
             text="Dashboard",
             onClick=lambda: self._switch_page(_PAGE_DASHBOARD, "Dashboard"),
         )
-        self._nav.addItem(
-            routeKey="discovery",
-            icon=FluentIcon.SEARCH,
-            text="Discovery",
-            onClick=lambda: self._switch_page(_PAGE_DISCOVERY, "System Discovery"),
-        )
+        # MODIFIED: Discovery nav hidden while scope is microservices-only.
+        if DISCOVERY_ENABLED:
+            self._nav.addItem(
+                routeKey="discovery",
+                icon=FluentIcon.SEARCH,
+                text="Discovery",
+                onClick=lambda: self._switch_page(_PAGE_DISCOVERY, "System Discovery"),
+            )
         self._nav.addItem(
             routeKey="catalog",
             icon=FluentIcon.LIBRARY,
@@ -227,8 +230,8 @@ class MainWindow(FramelessWindow):
         self._nav.addItem(
             routeKey="advisor",
             icon=FluentIcon.ROBOT,
-            text="AI Advisor",
-            onClick=lambda: self._switch_page(_PAGE_ADVISOR, "AI Advisor"),
+            text="Telemetry",
+            onClick=lambda: self._switch_page(_PAGE_ADVISOR, "Telemetry & Advisor"),
         )
         self._nav.addItem(
             routeKey="experiments",
@@ -265,6 +268,7 @@ class MainWindow(FramelessWindow):
         self._page_title.setText(title)
 
     def _connect_signals(self):
+        self._settings_view.settings_saved.connect(self._advisor_view.refresh_credentials)
         self.controller.log_message.connect(self._log_console.append_log)
         self.controller.state_changed.connect(self._update_state_bar)
         self.controller.experiment_started.connect(

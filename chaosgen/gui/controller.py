@@ -52,10 +52,13 @@ class AppController(QObject):
     experiment_started = Signal(str)
     experiment_finished = Signal(bool, str)
 
-    # Advisor signals
+    # Advisor / telemetry signals
     advisor_started = Signal()
     advisor_finished = Signal(object)
     advisor_error = Signal(str)
+    telemetry_check_finished = Signal(dict)
+    telemetry_progress = Signal(str)
+    llm_check_finished = Signal(bool, str)
 
     # Status refresh
     status_refreshed = Signal(dict)
@@ -140,6 +143,46 @@ class AppController(QObject):
         worker.signals.error.connect(self.advisor_error.emit)
         self._spawn(worker)
 
+    def check_telemetry_async(self, prom_url: str, loki_url: str):
+        from chaosgen.gui.analysis_pipeline import check_telemetry_endpoints
+
+        worker = AsyncWorker(check_telemetry_endpoints, prom_url, loki_url)
+        worker.signals.finished.connect(self.telemetry_check_finished.emit)
+        worker.signals.error.connect(self.advisor_error.emit)
+        self._spawn(worker)
+
+    def test_llm_async(self, provider: str, model: str | None):
+        from chaosgen.gui.analysis_pipeline import test_llm_provider
+
+        worker = AsyncWorker(test_llm_provider, provider, model)
+        worker.signals.finished.connect(
+            lambda result: self.llm_check_finished.emit(result[0], result[1])
+        )
+        worker.signals.error.connect(
+            lambda err: self.llm_check_finished.emit(False, err)
+        )
+        self._spawn(worker)
+
+    def run_telemetry_analysis_async(self, request):
+        from chaosgen.gui.analysis_pipeline import run_analysis
+
+        self.advisor_started.emit()
+        self.telemetry_progress.emit("Collecting telemetry...")
+        worker = AsyncWorker(run_analysis, request)
+        worker.signals.finished.connect(self._on_telemetry_analysis_done)
+        worker.signals.error.connect(self.advisor_error.emit)
+        self._spawn(worker)
+
+    def submit_catalog_experiment(self, experiment):
+        from chaosgen.schemas.scenarios import AdvisorReport
+
+        report = AdvisorReport(
+            anomalies_found=0,
+            generated_experiments=[experiment],
+        )
+        self.orchestrator.run_ai_experiment(report)
+        self.state_changed.emit(self.state)
+
     def approve_and_run(self, index: int):
         worker = AsyncWorker(self.orchestrator.approve_and_run, index)
         worker.signals.finished.connect(
@@ -179,6 +222,12 @@ class AppController(QObject):
     def _on_advisor_done(self, report):
         self.orchestrator.run_ai_experiment(report)
         self.advisor_finished.emit(report)
+
+    @Slot(object)
+    def _on_telemetry_analysis_done(self, result):
+        if result.report.generated_experiments:
+            self.orchestrator.run_ai_experiment(result.report)
+        self.advisor_finished.emit(result)
 
 
 class _SignalLogHandler(logging.Handler):

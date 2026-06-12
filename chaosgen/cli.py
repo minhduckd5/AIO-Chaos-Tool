@@ -2,7 +2,8 @@
 ChaosGen CLI — AI-Driven Chaos Scenario Generator
 
 Command groups:
-    chaosgen discover           Scan environment, architecture, and observability
+    chaosgen discover           [scoped off] Scan environment, architecture, observability
+    chaosgen analyze            Analyze live or exported telemetry (anomaly detection)
     chaosgen bootstrap          Install missing observability tooling
     chaosgen generate           AI chaos scenario generation
     chaosgen run                Execute approved scenarios (HITL gate)
@@ -56,9 +57,18 @@ def main() -> None:
 )
 def discover(config_path, arch, env_type, output):
     """Probe environment, classify architecture, detect observability tools."""
+    from chaosgen.config.scope import DISCOVERY_ENABLED, scope_notice
     from chaosgen.config.settings import load_settings
-    from chaosgen.discovery import run_full_discovery
+    from chaosgen.discovery import resolve_discovery_report, run_full_discovery
     from chaosgen.schemas.discovery import ArchitectureType, EnvironmentType, ProbeOutcome
+
+    if not DISCOVERY_ENABLED:
+        click.secho(
+            f"[ChaosGen] Discovery is temporarily disabled.\n  {scope_notice()}",
+            fg="yellow",
+        )
+        click.echo("  Pipeline is focused on microservices. Use `chaosgen generate` to continue.")
+        sys.exit(0)
 
     settings = load_settings(config_path)
 
@@ -138,6 +148,150 @@ def discover(config_path, arch, env_type, output):
 
 
 # ---------------------------------------------------------------------------
+# analyze  (live registry-vm stack OR offline export bundle)
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+@click.option(
+    "--live", is_flag=True, default=False,
+    help="Pull telemetry from live Prometheus/Loki (default when neither --live nor --export).",
+)
+@click.option(
+    "--export", "export_path", default=None, type=click.Path(exists=True),
+    help="Path to an export bundle or parent exports/ directory.",
+)
+@click.option(
+    "--check", is_flag=True, default=False,
+    help="Only verify live Prometheus/Loki connectivity (Way 1).",
+)
+@click.option("--hours", default=24, show_default=True, help="Lookback hours for --live.")
+@click.option(
+    "--generate", "with_generate", is_flag=True, default=False,
+    help="After analysis, run scenario generation (like chaosgen generate).",
+)
+@click.option("--provider", type=click.Choice(["ollama", "openai", "anthropic", "groq"]), default=None)
+@click.option("--top-n", default=5, show_default=True)
+@click.option("--config", "config_path", default=None, help="Path to settings.yaml.")
+def analyze(live, export_path, check, hours, with_generate, provider, top_n, config_path):
+    """Analyze metrics/logs from live stack or offline export; optional scenario generation."""
+    from chaosgen.config.settings import load_settings
+    from chaosgen.config.telemetry_endpoints import resolve_loki_url, resolve_prometheus_url
+    from chaosgen.ingestion.analysis import analyze_dataset
+    from chaosgen.ingestion.export_loader import ExportLoader
+    from chaosgen.ingestion.telemetry_factory import build_telemetry_collector, check_live_stack
+
+    settings = load_settings(config_path)
+
+    if check:
+        prom_url = resolve_prometheus_url(settings)
+        loki_url = resolve_loki_url(settings)
+        click.echo("[ChaosGen] Live stack endpoints:")
+        click.echo(f"  Prometheus: {prom_url}")
+        click.echo(f"  Loki:       {loki_url}")
+        health = check_live_stack(settings)
+        for name, msg in health.items():
+            ok = not str(msg).startswith("FAIL")
+            click.secho(f"  {name}: {msg}", fg="green" if ok else "red")
+        if any(str(msg).startswith("FAIL") for msg in health.values()):
+            sys.exit(1)
+        return
+
+    if export_path:
+        click.echo(f"[ChaosGen] Loading offline export: {export_path}")
+        loader = ExportLoader.resolve_bundle(export_path)
+        dataset = loader.load()
+        source = f"export:{loader.export_root.name}"
+    else:
+        click.echo(f"[ChaosGen] Collecting live telemetry ({hours}h lookback)...")
+        collector = build_telemetry_collector(settings)
+        dataset = collector.collect_baseline(duration_hours=hours)
+        source = "live"
+
+    click.echo(
+        f"  Series: {len(dataset.metrics)} | "
+        f"Samples: {dataset.total_samples} | "
+        f"Log streams: {len(dataset.logs)}"
+    )
+
+    clusters, summaries, feature_rows = analyze_dataset(dataset)
+    click.secho(f"\n=== Anomaly Analysis ({source}) ===", bold=True)
+    click.echo(f"  Feature windows: {feature_rows}")
+    click.echo(f"  Anomaly clusters: {len(clusters)}")
+
+    if not summaries:
+        click.secho("  No anomalies detected (or insufficient feature data).", fg="yellow")
+        if not with_generate:
+            return
+    else:
+        for i, s in enumerate(summaries[:10], 1):
+            feats = ", ".join(f"{n}={v:.2f}" for n, v in s.top_features[:3])
+            click.echo(f"  [{i}] {s.service_name} severity={s.severity:.2f} — {feats}")
+
+    if not with_generate:
+        click.echo("\nRun with `--generate` to feed anomalies into the advisor pipeline.")
+        return
+
+    _generate_from_analysis(
+        settings=settings,
+        summaries=summaries,
+        provider=provider,
+        model=None,
+        top_n=top_n,
+        output="table",
+        config_path=config_path,
+    )
+
+
+def _generate_from_analysis(
+    settings,
+    summaries,
+    provider,
+    model,
+    top_n,
+    output,
+    config_path,
+):
+    """Generate ranked scenarios from precomputed anomaly summaries."""
+    from chaosgen.advisor.context_builder import ContextBuilder
+    from chaosgen.advisor.llm_advisor import LLMAdvisor, build_provider
+    from chaosgen.advisor.scenario_generator import ScenarioGenerator
+    from chaosgen.advisor.scenario_ranker import ScenarioRanker
+    from chaosgen.config.scope import scope_notice
+    from chaosgen.discovery import resolve_discovery_report
+
+    effective_provider = provider or settings.llm_provider
+    effective_model = model or settings.llm_model
+
+    click.echo("\n[ChaosGen] Generating scenarios from analysis...")
+    click.echo(f"  {scope_notice()}")
+    report = resolve_discovery_report(settings=settings)
+
+    try:
+        llm_provider = build_provider(effective_provider, model=effective_model)
+    except Exception as exc:
+        click.secho(f"Provider error: {exc}", fg="red")
+        sys.exit(1)
+
+    ctx = ContextBuilder(report).build()
+    advisor = LLMAdvisor(provider=llm_provider)
+    hypotheses = advisor.interpret_anomalies(summaries, context=ctx)
+    generator = ScenarioGenerator()
+    experiments = generator.generate(hypotheses)
+    sources = {exp.name: "llm" for exp in experiments}
+
+    ranker = ScenarioRanker()
+    ranked = ranker.rank(experiments, sources=sources, top_n=top_n)
+    if not ranked:
+        click.secho("No scenarios generated.", fg="yellow")
+        return
+
+    click.secho(f"\nTop {len(ranked)} ranked scenarios:\n", bold=True)
+    for r in ranked:
+        click.echo(f"  {r.summary()}")
+
+
+# ---------------------------------------------------------------------------
 # bootstrap
 # ---------------------------------------------------------------------------
 
@@ -154,11 +308,13 @@ def discover(config_path, arch, env_type, output):
 def bootstrap(tier, namespace, output_dir):
     """Install or generate observability tooling (Prometheus, Grafana, Loki)."""
     from chaosgen.bootstrap import ObservabilityInstaller
-    from chaosgen.discovery import run_full_discovery
+    from chaosgen.config.scope import scope_notice
+    from chaosgen.discovery import resolve_discovery_report
     from chaosgen.schemas.discovery import EnvironmentType
 
-    click.echo("[ChaosGen] Running discovery before bootstrap...")
-    report = run_full_discovery()
+    click.echo(f"[ChaosGen] Resolving pipeline context (microservices focus)...")
+    click.echo(f"  {scope_notice()}")
+    report = resolve_discovery_report()
 
     if tier != "auto":
         env_map = {
@@ -212,19 +368,28 @@ def generate(provider, model, arch, top_n, from_catalog, output, config_path):
     """Generate AI chaos scenarios from anomaly data or the pre-built catalog."""
     from chaosgen.advisor.scenario_catalog import ScenarioCatalog
     from chaosgen.advisor.scenario_ranker import ScenarioRanker
+    from chaosgen.config.scope import FOCUSED_ARCHITECTURE, scope_notice
     from chaosgen.config.settings import load_settings
-    from chaosgen.discovery import run_full_discovery
+    from chaosgen.discovery import resolve_discovery_report
     from chaosgen.schemas.discovery import ArchitectureType
 
     settings = load_settings(config_path)
     effective_provider = provider or settings.llm_provider
     effective_model = model or settings.llm_model
 
-    click.echo("[ChaosGen] Running discovery...")
-    report = run_full_discovery(settings=settings)
+    click.echo("[ChaosGen] Resolving pipeline context...")
+    click.echo(f"  {scope_notice()}")
+    report = resolve_discovery_report(settings=settings)
 
     if arch and arch != "auto":
-        report.architecture.type = ArchitectureType(arch)
+        requested = ArchitectureType(arch)
+        if requested != FOCUSED_ARCHITECTURE:
+            click.secho(
+                f"  Note: only {FOCUSED_ARCHITECTURE.value} is in active scope; "
+                f"using catalog/advisor for {requested.value} anyway.",
+                fg="yellow",
+            )
+        report.architecture.type = requested
 
     arch_type = report.architecture.type
     click.echo(f"  Architecture: {arch_type.value}")
@@ -238,7 +403,8 @@ def generate(provider, model, arch, top_n, from_catalog, output, config_path):
         from chaosgen.advisor.context_builder import ContextBuilder
         from chaosgen.advisor.llm_advisor import LLMAdvisor, build_provider
         from chaosgen.advisor.scenario_generator import ScenarioGenerator
-        from chaosgen.ingestion.collector import TelemetryCollector
+        from chaosgen.ingestion.analysis import analyze_dataset
+        from chaosgen.ingestion.telemetry_factory import build_telemetry_collector
 
         click.echo(f"  Provider: {effective_provider}")
 
@@ -252,17 +418,9 @@ def generate(provider, model, arch, top_n, from_catalog, output, config_path):
         advisor = LLMAdvisor(provider=llm_provider)
 
         try:
-            collector = TelemetryCollector(
-                prometheus_url=report.observability.metrics_endpoint or "http://localhost:9090",
-                loki_url=report.observability.logs_endpoint or "http://localhost:3100",
-            )
-            from chaosgen.ml.feature_engineering import FeatureEngineer
-            from chaosgen.ml.anomaly_detector import AnomalyDetector
-            dataset = collector.collect(lookback_hours=24)
-            fe = FeatureEngineer()
-            features = fe.engineer(dataset)
-            detector = AnomalyDetector()
-            anomaly_summaries = detector.detect_and_summarize(features)
+            collector = build_telemetry_collector(settings)
+            dataset = collector.collect_baseline(duration_hours=24)
+            _, anomaly_summaries, _ = analyze_dataset(dataset)
         except Exception as exc:
             click.secho(f"  Telemetry unavailable ({exc}), generating from context only.", fg="yellow")
             anomaly_summaries = []
@@ -444,6 +602,30 @@ def config_init():
     from chaosgen.schemas.discovery import ArchitectureType, EnvironmentType, ObservabilityTool
 
     click.secho("\n[ChaosGen Config Wizard]\n", bold=True)
+
+    if click.confirm("Use registry-vm preset (192.168.31.220)?", default=True):
+        from chaosgen.config.telemetry_endpoints import DEFAULT_LOKI_URL, DEFAULT_PROMETHEUS_URL
+        settings = ChaosGenSettings(
+            hints=UserHints(
+                architecture=ArchitectureType.MICROSERVICES,
+                environment=EnvironmentType.KUBERNETES,
+                skip_auto_detect=True,
+                observability=[
+                    ObservabilityHint(
+                        tool=ObservabilityTool.PROMETHEUS,
+                        url=DEFAULT_PROMETHEUS_URL,
+                    ),
+                    ObservabilityHint(
+                        tool=ObservabilityTool.LOKI,
+                        url=DEFAULT_LOKI_URL,
+                    ),
+                ],
+            ),
+        )
+        save_settings(settings)
+        click.secho(f"\nSettings written to {SETTINGS_FILE}", fg="green")
+        click.echo("Run: chaosgen analyze --check")
+        return
 
     # Architecture
     arch_choices = [t.value for t in ArchitectureType if t != ArchitectureType.UNKNOWN]

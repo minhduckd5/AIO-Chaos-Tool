@@ -21,13 +21,28 @@ GOLDEN_SIGNAL_QUERIES: Dict[str, str] = {
     "network_tx_bytes": 'sum(rate(container_network_transmit_bytes_total[5m])) by (pod)',
 }
 
+# When golden signals return nothing (OTel-only or no app scrape), use infra/OTel baselines.
+FALLBACK_INFRA_QUERIES: Dict[str, str] = {
+    "up": "up",
+    "node_cpu": 'rate(node_cpu_seconds_total{mode!="idle"}[5m])',
+    "node_memory_avail": "node_memory_MemAvailable_bytes",
+    "http_server_duration_count": "http_server_duration_count",
+    "rpc_server_duration_count": "sum(rate(rpc_server_duration_count[5m])) by (service_name)",
+}
+
 
 class PrometheusClient:
     """Wraps the Prometheus HTTP API for metric ingestion."""
 
-    def __init__(self, base_url: str, timeout: int = 30):
+    def __init__(self, base_url: str, timeout: int = 30, bearer_token: str | None = None):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.bearer_token = bearer_token
+
+    def _headers(self) -> dict[str, str]:
+        if not self.bearer_token:
+            return {}
+        return {"Authorization": f"Bearer {self.bearer_token}"}
 
     def query(self, promql: str) -> List[MetricSample]:
         """Execute an instant PromQL query."""
@@ -35,6 +50,7 @@ class PrometheusClient:
             resp = requests.get(
                 f"{self.base_url}/api/v1/query",
                 params={"query": promql},
+                headers=self._headers(),
                 timeout=self.timeout,
             )
             resp.raise_for_status()
@@ -66,6 +82,7 @@ class PrometheusClient:
                     "end": end,
                     "step": step,
                 },
+                headers=self._headers(),
                 timeout=self.timeout,
             )
             resp.raise_for_status()
@@ -92,15 +109,52 @@ class PrometheusClient:
             all_series.extend(series)
         return all_series
 
+    def query_fallback_infra(
+        self, start: float, end: float, step: str = "60s"
+    ) -> List[TimeSeries]:
+        """Infra / OTel metrics when classic microservice golden signals are absent."""
+        all_series: List[TimeSeries] = []
+        for signal_name, promql in FALLBACK_INFRA_QUERIES.items():
+            series = self.query_range(promql, start, end, step)
+            for ts in series:
+                ts.metric_name = f"infra__{signal_name}__{ts.metric_name}"
+            all_series.extend(series)
+        return all_series
+
     def health_check(self) -> bool:
         """Verify Prometheus is reachable."""
+        ok, _ = self.probe()
+        return ok
+
+    def probe(self) -> tuple[bool, str]:
+        """Reachability + auth + sample query (more reliable than /-/healthy alone)."""
         try:
             resp = requests.get(
-                f"{self.base_url}/-/healthy", timeout=5
+                f"{self.base_url}/api/v1/query",
+                params={"query": "up"},
+                headers=self._headers(),
+                timeout=5,
             )
-            return resp.status_code == 200
-        except requests.RequestException:
-            return False
+            if resp.status_code == 401:
+                return False, "401 Unauthorized — set Prometheus Token in Settings"
+            if resp.status_code == 403:
+                return False, "403 Forbidden — check Prometheus Token / RBAC"
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("status") != "success":
+                return False, data.get("error", "query failed")
+            series = len(data.get("data", {}).get("result", []))
+            if series == 0:
+                return True, "OK (reachable, but 'up' returned 0 series — check scrape targets)"
+            return True, f"OK ({series} targets in 'up' query)"
+        except requests.RequestException as exc:
+            try:
+                ping = requests.get(f"{self.base_url}/-/healthy", timeout=5)
+                if ping.status_code == 200:
+                    return False, f"reachable but query failed: {exc}"
+            except requests.RequestException:
+                pass
+            return False, f"unreachable ({exc})"
 
     @staticmethod
     def _parse_instant_results(results: List[Dict[str, Any]]) -> List[MetricSample]:

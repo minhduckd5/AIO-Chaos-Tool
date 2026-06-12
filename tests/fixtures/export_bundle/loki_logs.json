@@ -1,0 +1,18 @@
+{
+  "meta": {
+    "start_utc": "2024-11-14T22:13:20+00:00",
+    "end_utc": "2024-11-15T22:13:20+00:00",
+    "total_lines": 2
+  },
+  "result": [
+    {
+      "chunk": 1,
+      "query": "{service=\"cart\"}",
+      "stream": {"service": "cart", "level": "error"},
+      "values": [
+        ["1700000120000000000", "ERROR connection timeout upstream"],
+        ["1700000180000000000", "ERROR payment service unavailable"]
+      ]
+    }
+  ]
+}

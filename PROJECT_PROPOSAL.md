@@ -134,7 +134,13 @@ graph TD
 
 ## 2. PIPELINE DỮ LIỆU & LUỒNG XỬ LÝ (DATA FLOW & SYSTEMS WORKFLOW)
 
-Sức mạnh cốt lõi của ChaosGen nằm ở quy trình khép kín: **Giám sát liên tục $\rightarrow$ Tự động Phát hiện dị thường $\rightarrow$ AI đề xuất kịch bản hỗn loạn tương ứng $\rightarrow$ Tiêm lỗi $\rightarrow$ Kiểm thử khả năng tự phục hồi.**
+> **Phạm vi hiện tại (scope):** Tập trung **microservices** trước. Hybrid discovery tạm tắt
+> (`DISCOVERY_ENABLED = False` trong `chaosgen/config/scope.py`). Các kiến trúc khác
+> (monolith, event-driven, serverless, client-server) sẽ bổ sung dần.
+>
+> Sơ đồ đầy đủ theo định hướng advisor: xem [docs/pipeline-framework.md](docs/pipeline-framework.md).
+
+Sức mạnh cốt lõi của ChaosGen nằm ở quy trình khép kín: **Giám sát $\rightarrow$ Phát hiện dị thường $\rightarrow$ (gatekeeper: sự cố thật?) $\rightarrow$ Mô tả Unknown $\rightarrow$ Known $\rightarrow$ Chaos $\rightarrow$ Verify $\rightarrow$ Đánh giá (residual risk).**
 
 ### 2.1 Sơ đồ Luồng Dữ liệu Tổng thể (Data Flow Diagram - DFD)
 
@@ -142,63 +148,58 @@ Sơ đồ dưới đây đặc tả dòng chảy dữ liệu (Data Pipeline) t�
 
 ```mermaid
 flowchart TD
-    %% Data Sources
-    subgraph Sources["Nguồn Dữ liệu Hệ thống"]
-        Metrics["Prometheus (System Metrics)"]
-        Logs["Grafana Loki (System Logs)"]
+    subgraph Sources["Nguồn Dữ liệu"]
+        Metrics["Prometheus"]
+        Logs["Loki"]
     end
 
-    %% Ingestion & ML Pipeline
-    subgraph ML_Pipe["Pipeline Học máy & Xử lý số liệu"]
-        Ingester["Collector & Data Ingester"]
-        FeatureEng["Feature Engineering (Pandas/Numpy)"]
-        IsoForest{"IsolationForest Anomaly Detector"}
-        KMeans{"K-Means Incidents Clustering"}
+    subgraph ML_Pipe["Ingestion & Anomaly Detection"]
+        Ingester["TelemetryCollector"]
+        FeatureEng["FeatureEngineer"]
+        IsoForest["IsolationForest"]
+        KMeans["K-Means"]
+        Gatekeeper{{"Gatekeeper<br/>?? real ??<br/>frequency × severity"}}
     end
 
-    %% AI Generation
-    subgraph AI_Core["Trí tuệ nhân tạo (LLM Scenario Advisor)"]
-        ArchProbe["Env & Architecture Profile"]
-        ContextBuilder["Context & Prompt Builder"]
-        LLM[("Ollama (Local) / OpenAI / Anthropic")]
-        Instructor["Pydantic Structured Output"]
-        Ranker["Scenario Ranker (Confidence, Coverage)"]
+    subgraph Knowledge["Known / Unknown (USP)"]
+        Scope["Microservices Profile<br/>(scope.py)"]
+        Describe["LLM describe"]
+        Catalog["ScenarioCatalog — known"]
+        Unknown(("In the unknown"))
     end
 
-    %% Execution Gateway
-    subgraph Execution["Hệ thống Điều phối & Tiêm lỗi"]
-        HITL{"HITL Approval Gate (PySide6)"}
-        UCAL_Trans["UCAL Translator Engine"]
-        Orchestrator["State Machine (transitions)"]
-        SafetyGov["Blast Radius Governance"]
+    subgraph AI_Core["Scenario Pipeline"]
+        ContextBuilder["ContextBuilder"]
+        LLM[("LLM Advisor")]
+        Ranker["ScenarioRanker"]
     end
 
-    %% Flow lines
-    Metrics -->|Pull JSON via HTTP API| Ingester
-    Logs -->|Query Log streams| Ingester
-    
-    Ingester -->|Raw DataFrame| FeatureEng
-    FeatureEng -->|Resampled & Normalized Matrix| IsoForest
-    IsoForest -->|Anomaly Scores & Timestamps| KMeans
-    KMeans -->|Grouped Anomaly Clusters| ContextBuilder
-    
-    ArchProbe -->|Target Topology & Servicemap| ContextBuilder
-    ContextBuilder -->|Prompt + System Architect Context| LLM
-    LLM -->|JSON payload| Instructor
-    Instructor -->|Pydantic Models: ChaosExperiment| Ranker
-    Ranker -->|Ranked Experiments Queue| HITL
-    
-    HITL -->|Approve / Refine| UCAL_Trans
-    HITL -->|Reject| RejectQueue["Discard Scenario"]
-    
-    UCAL_Trans -->|Compiled Tool-Specific Config| Orchestrator
-    Orchestrator <-->|Pre & Post Execution Steady-State Check| Metrics
-    Orchestrator -->|Enforce Safety Limits| SafetyGov
-    
-    style IsoForest fill:#ffe699,stroke:#d6b656,stroke-width:2px;
-    style KMeans fill:#ffe699,stroke:#d6b656,stroke-width:2px;
-    style LLM fill:#c6dbf0,stroke:#688bb6,stroke-width:2px;
-    style HITL fill:#f8cecc,stroke:#b85450,stroke-width:2px;
+    subgraph Execution["Chaos & Safety"]
+        HITL{"HITL Gate"}
+        UCAL_Trans["UCAL Translator"]
+        Orchestrator["Orchestrator"]
+        SafetyGov["Blast Radius"]
+        Verify(("Verify"))
+    end
+
+    Metrics --> Ingester
+    Logs --> Ingester
+    Ingester --> FeatureEng --> IsoForest --> KMeans --> Gatekeeper
+    Gatekeeper --> Unknown
+    Unknown --> Describe --> Catalog
+    Scope --> ContextBuilder
+    Catalog --> Ranker
+    Gatekeeper --> ContextBuilder
+    ContextBuilder --> LLM --> Ranker --> HITL
+    HITL --> UCAL_Trans --> Orchestrator
+    Orchestrator --> Verify
+    Orchestrator --> SafetyGov
+    Verify -->|residual risk ≠ 100%| Catalog
+
+    style Gatekeeper fill:#fff2cc,stroke:#d6b656,stroke-dasharray: 5 5
+    style Unknown fill:#f8cecc,stroke:#b85450
+    style HITL fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    style Scope fill:#d5e8d4,stroke:#82b366
 ```
 
 ---

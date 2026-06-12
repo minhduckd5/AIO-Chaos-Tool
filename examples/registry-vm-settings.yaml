@@ -1,0 +1,19 @@
+# ChaosGen settings — microservices-demo registry-vm live stack (Way 1)
+# Copy to ~/.config/chaosgen/settings.yaml or pass: chaosgen analyze --config examples/registry-vm-settings.yaml
+
+hints:
+  architecture: microservices
+  environment: kubernetes
+  skip_auto_detect: true
+  observability:
+    - tool: prometheus
+      url: http://192.168.31.220:9090
+      auth:
+        auth_type: none
+    - tool: loki
+      url: http://192.168.31.220:3100
+      auth:
+        auth_type: none
+
+llm_provider: ollama
+llm_model: llama3.2:3b

@@ -9,12 +9,15 @@
 
 ChaosGen replaces manual chaos scenario authoring with an AI pipeline that:
 
-1. **Discovers** your environment (Kubernetes, Docker Compose, Bare Metal, Cloud VM)
-2. **Classifies** your architecture (Microservices, Monolith, Event-Driven, etc.)
-3. **Checks** for Prometheus/Grafana/Loki and bootstraps them if missing
-4. **Generates** context-aware chaos scenarios via LLM (Ollama, OpenAI, Anthropic, Groq)
-5. **Ranks** scenarios by confidence, historical value, coverage gap, and safety margin
-6. **Runs** approved experiments through a state-machine orchestrator with automatic rollback
+1. **Ingests** telemetry (Prometheus metrics + Loki logs) and detects anomalies
+2. **Focuses** on **microservices** architecture first (discovery auto-probe temporarily scoped off)
+3. **Generates** context-aware chaos scenarios via LLM or the pre-built catalog
+4. **Ranks** scenarios by confidence, historical value, coverage gap, and safety margin
+5. **Runs** approved experiments through a state-machine orchestrator with HITL gate and rollback
+6. **Evaluates** results via KPI tracker and A/B comparison
+
+> Other architecture types (monolith, event-driven, serverless, client-server) and full hybrid
+> discovery will be re-enabled incrementally. See [Pipeline Framework](docs/pipeline-framework.md).
 
 ## Integrated Chaos Tools
 
@@ -43,15 +46,35 @@ pip install -e ".[gui]"
 
 ## Quick Start
 
-### 1. Discover Your Environment
+### Telemetry: 3 ways (priority order)
+
+**Way 1 — Live stack (default)** — registry-vm `192.168.31.220`:
 
 ```bash
-chaosgen discover
+chaosgen config init          # choose registry-vm preset
+chaosgen analyze --check      # verify Prometheus + Loki
+chaosgen analyze              # live ingest + anomaly detection
+chaosgen generate             # uses same live endpoints
 ```
 
-Probes for Kubernetes, Docker, and cloud metadata. Classifies architecture and checks observability tools.
+Or copy `examples/registry-vm-settings.yaml` to your ChaosGen config path.
 
-### 2. Bootstrap Observability (if missing)
+**Way 2 — Offline export bundle:**
+
+```bash
+chaosgen analyze --export H:/Project/microservices-demo-1/local/observability-fetch/exports
+chaosgen analyze --export <path> --generate --top-n 5
+```
+
+**Way 3 — Re-fetch richer microservices data** (run on registry-vm network):
+
+```powershell
+.\local\observability-fetch\fetch-observability-data.ps1 -Days 7
+```
+
+Then analyze with `--export` as above. The fetch script now includes `http_requests_total`, 5xx rate, latency p95, and container metrics.
+
+### 1. Bootstrap Observability (if missing)
 
 ```bash
 # Auto-detect tier and install
@@ -63,7 +86,7 @@ chaosgen bootstrap --tier docker   # Inject Prometheus/Grafana into docker-compo
 chaosgen bootstrap --tier script   # Generate install_prometheus.sh for bare metal
 ```
 
-### 3. Generate AI Chaos Scenarios
+### 2. Generate AI Chaos Scenarios
 
 ```bash
 # Use local Ollama (default — air-gapped, no API cost)
@@ -79,7 +102,7 @@ chaosgen generate --from-catalog --arch microservices
 chaosgen generate --provider anthropic --arch event_driven --top-n 3
 ```
 
-### 4. Run Approved Experiments (HITL Gate)
+### 3. Run Approved Experiments (HITL Gate)
 
 ```bash
 # Review and approve/reject each scenario interactively
@@ -89,7 +112,7 @@ chaosgen run
 chaosgen run --dry-run
 ```
 
-### 5. Evaluate Results
+### 4. Evaluate Results
 
 ```bash
 # KPI report
@@ -110,6 +133,7 @@ Store keys in `~/.chaosgen/.env` (auto-created on first save from the Settings t
 
 ```env
 OPENAI_API_KEY=sk-...
+OPENAI_BASE_URL=https://your-proxy/v1   # optional — OpenAI-compatible router (e.g. 9router)
 ANTHROPIC_API_KEY=sk-ant-...
 GROQ_API_KEY=gsk_...
 OLLAMA_URL=http://localhost:11434
@@ -150,7 +174,9 @@ modules:
 chaosgen/
 ├── cli.py                    # Click command groups
 ├── orchestrator.py           # State-machine engine + HITL gate
-├── discovery/                # Environment + architecture detection
+├── config/
+│   └── scope.py              # Microservices-first scope guard (discovery toggle)
+├── discovery/                # Hybrid discovery (scoped off — code retained)
 │   ├── environment_probe.py
 │   ├── architecture_classifier.py
 │   ├── service_mapper.py
@@ -194,6 +220,7 @@ docker compose --profile dev run --rm chaosgen_dev pytest -q
 
 ## Documentation
 
+- **[Pipeline Framework](docs/pipeline-framework.md)** — Advisor research model mapped to ChaosGen modules (microservices focus).
 - **[IT Project Proposal](docs/IT_PROJECT_PROPOSAL.md)** — Technical architecture, data flows, API contracts, DevOps, security matrix, roadmap, and risk analysis (for thesis defense / technical review).
 
 ## License

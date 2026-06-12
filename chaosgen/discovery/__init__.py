@@ -34,6 +34,7 @@ __all__ = [
     "ObservabilityProbe",
     "DiscoveryReport",
     "run_full_discovery",
+    "resolve_discovery_report",
 ]
 
 
@@ -147,4 +148,36 @@ def run_full_discovery(
         observability=obs_profile,
         signals=signals,
         discovery_errors=errors,
+    )
+
+
+def resolve_discovery_report(
+    settings: "ChaosGenSettings | None" = None,
+    kubeconfig: str | None = None,
+    compose_file: str | None = None,
+) -> DiscoveryReport:
+    """
+    Entry point for pipeline consumers.
+
+    When discovery is scoped off, returns a focused microservices profile
+    without running environment/architecture probes.
+    """
+    from chaosgen.config.scope import DISCOVERY_ENABLED, build_focused_discovery_report
+
+    if not DISCOVERY_ENABLED:
+        report = build_focused_discovery_report()
+        if settings and settings.hints.observability:
+            for hint in settings.hints.observability:
+                if hint.tool.value == "prometheus":
+                    report.observability.metrics_endpoint = hint.url
+                    report.observability.has_metrics = True
+                elif hint.tool.value == "loki":
+                    report.observability.logs_endpoint = hint.url
+                    report.observability.has_logs = True
+        return report
+
+    return run_full_discovery(
+        settings=settings,
+        kubeconfig=kubeconfig,
+        compose_file=compose_file,
     )
