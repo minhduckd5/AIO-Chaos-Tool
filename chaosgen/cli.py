@@ -6,6 +6,8 @@ Command groups:
     chaosgen analyze            Analyze live or exported telemetry (anomaly detection)
     chaosgen bootstrap          Install missing observability tooling
     chaosgen generate           AI chaos scenario generation
+    chaosgen incidents          List described/unknown incidents from a saved report
+    chaosgen promote            Promote a described incident to the dynamic catalog
     chaosgen run                Execute approved scenarios (HITL gate)
     chaosgen evaluate           KPI and A/B evaluation reports
     chaosgen status             Module and orchestrator status
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 
 import click
 
@@ -234,7 +237,9 @@ def analyze(live, export_path, check, hours, with_generate, provider, top_n, con
 
     _generate_from_analysis(
         settings=settings,
+        clusters=clusters,
         summaries=summaries,
+        lookback_hours=float(hours),
         provider=provider,
         model=None,
         top_n=top_n,
@@ -243,47 +248,153 @@ def analyze(live, export_path, check, hours, with_generate, provider, top_n, con
     )
 
 
+def _describe_status(report, cluster_id: int) -> str:
+    """Human-readable describe outcome for a gatekeeper candidate row."""
+    for desc in report.descriptions:
+        if desc.source_incident_id == cluster_id:
+            if desc.metadata.get("describe_fallback"):
+                return "describe fallback (no chaos)"
+            if desc.knowledge_state.value == "described":
+                return "described"
+            return desc.knowledge_state.value
+    return "—"
+
+
+def _print_gatekeeper_table(report, *, show_transient: bool = False) -> None:
+    from chaosgen.schemas.incidents import IncidentVerdict
+
+    click.secho("\nAnomaly Gatekeeper Results:", bold=True)
+    if not report.incident_candidates and report.filtered_noise_count == 0:
+        click.echo("  (no anomaly clusters)")
+        return
+
+    noise_shown = report.filtered_noise_count
+    if noise_shown:
+        click.echo(f"  filtered NOISE clusters: {noise_shown}")
+
+    for cand in report.incident_candidates:
+        if cand.verdict == IncidentVerdict.TRANSIENT and not show_transient:
+            continue
+        log_yes = "yes" if cand.log_correlated else "no"
+        verdict = cand.verdict.value.upper()
+        if cand.passes_downstream:
+            status = _describe_status(report, cand.cluster_id)
+            arrow = f"→ {status}"
+        elif cand.verdict == IncidentVerdict.TRANSIENT:
+            arrow = "→ monitor only"
+        else:
+            arrow = "→ filtered"
+        click.echo(
+            f"  cluster {cand.cluster_id}  {verdict:<9} "
+            f"freq={cand.frequency:.1f}/h  sev={cand.severity:.2f}  "
+            f"log={log_yes}  {arrow}"
+        )
+
+
+def _resolve_experiment(report, experiment_arg: str):
+    """Match experiment by name or numeric index within the report."""
+    experiments = report.generated_experiments
+    if not experiments:
+        raise click.ClickException("Report contains no generated experiments.")
+
+    if experiment_arg.isdigit():
+        idx = int(experiment_arg)
+        if idx < 0 or idx >= len(experiments):
+            raise click.ClickException(
+                f"Experiment index {idx} out of range (0–{len(experiments) - 1})"
+            )
+        return experiments[idx]
+
+    if experiment_arg.startswith("ai-exp-"):
+        try:
+            idx = int(experiment_arg.split("-")[-1])
+            return experiments[idx]
+        except (ValueError, IndexError) as exc:
+            raise click.ClickException(f"Invalid experiment id {experiment_arg!r}") from exc
+
+    for exp in experiments:
+        if exp.name == experiment_arg:
+            return exp
+    names = ", ".join(e.name for e in experiments)
+    raise click.ClickException(
+        f"Experiment {experiment_arg!r} not found. Available: {names}"
+    )
+
+
 def _generate_from_analysis(
     settings,
+    clusters,
     summaries,
+    lookback_hours,
     provider,
     model,
     top_n,
     output,
     config_path,
+    skip_gatekeeper=False,
+    show_transient=False,
+    save_report_path=None,
 ):
-    """Generate ranked scenarios from precomputed anomaly summaries."""
+    """Run shared advisor pipeline and print ranked scenarios."""
     from chaosgen.advisor.context_builder import ContextBuilder
-    from chaosgen.advisor.llm_advisor import LLMAdvisor, build_provider
-    from chaosgen.advisor.scenario_generator import ScenarioGenerator
+    from chaosgen.advisor.pipeline import run_advisor_pipeline
+    from chaosgen.advisor.report_store import default_report_path, save_report
     from chaosgen.advisor.scenario_ranker import ScenarioRanker
     from chaosgen.config.scope import scope_notice
     from chaosgen.discovery import resolve_discovery_report
+    from chaosgen.schemas.scenarios import AdvisorReport
+    from chaosgen.storage.history import get_default_history_store
 
     effective_provider = provider or settings.llm_provider
     effective_model = model or settings.llm_model
+    if effective_provider:
+        settings = settings.model_copy(
+            update={"llm_provider": effective_provider, "llm_model": effective_model}
+        )
 
     click.echo("\n[ChaosGen] Generating scenarios from analysis...")
     click.echo(f"  {scope_notice()}")
-    report = resolve_discovery_report(settings=settings)
+    discovery = resolve_discovery_report(settings=settings)
+    ctx = ContextBuilder(discovery).build()
 
-    try:
-        llm_provider = build_provider(effective_provider, model=effective_model)
-    except Exception as exc:
-        click.secho(f"Provider error: {exc}", fg="red")
-        sys.exit(1)
+    if not summaries:
+        click.secho("No anomaly summaries — cannot run advisor pipeline.", fg="yellow")
+        return
 
-    ctx = ContextBuilder(report).build()
-    advisor = LLMAdvisor(provider=llm_provider)
-    hypotheses = advisor.interpret_anomalies(summaries, context=ctx)
-    generator = ScenarioGenerator()
-    experiments = generator.generate(hypotheses)
-    sources = {exp.name: "llm" for exp in experiments}
+    if skip_gatekeeper:
+        click.secho("  WARNING: --skip-gatekeeper enabled (debug only)", fg="yellow")
 
-    ranker = ScenarioRanker()
-    ranked = ranker.rank(experiments, sources=sources, top_n=top_n)
+    report_path = save_report_path or str(default_report_path())
+    report = run_advisor_pipeline(
+        clusters,
+        summaries,
+        settings=settings,
+        lookback_hours=lookback_hours,
+        context=ctx,
+        skip_gatekeeper=skip_gatekeeper,
+        generate_chaos=True,
+        report_path=report_path,
+    )
+    _print_gatekeeper_table(report, show_transient=show_transient)
+
+    written = save_report(report, save_report_path)
+    if save_report_path:
+        click.echo(f"\n  Report saved to {written}")
+    else:
+        click.echo(f"\n  Report saved to {default_report_path()}")
+
+    if not report.generated_experiments:
+        click.secho(
+            "No chaos scenarios generated (gatekeeper/describe filter may have removed all).",
+            fg="yellow",
+        )
+        return
+
+    ranker = ScenarioRanker(history_store=get_default_history_store(settings))
+    sources = {exp.name: "llm" for exp in report.generated_experiments}
+    ranked = ranker.rank(report.generated_experiments, sources=sources, top_n=top_n)
     if not ranked:
-        click.secho("No scenarios generated.", fg="yellow")
+        click.secho("No scenarios ranked.", fg="yellow")
         return
 
     click.secho(f"\nTop {len(ranked)} ranked scenarios:\n", bold=True)
@@ -363,8 +474,11 @@ def bootstrap(tier, namespace, output_dir):
     "--output", type=click.Choice(["table", "json", "yaml"]),
     default="table", show_default=True,
 )
+@click.option("--skip-gatekeeper", is_flag=True, default=False, help="Debug: bypass gatekeeper filter.")
+@click.option("--show-transient", is_flag=True, default=False, help="Show TRANSIENT rows in gatekeeper table.")
+@click.option("--save-report", "save_report_path", default=None, help="Write AdvisorReport JSON to PATH.")
 @click.option("--config", "config_path", default=None, help="Path to settings.yaml.")
-def generate(provider, model, arch, top_n, from_catalog, output, config_path):
+def generate(provider, model, arch, top_n, from_catalog, output, skip_gatekeeper, show_transient, save_report_path, config_path):
     """Generate AI chaos scenarios from anomaly data or the pre-built catalog."""
     from chaosgen.advisor.scenario_catalog import ScenarioCatalog
     from chaosgen.advisor.scenario_ranker import ScenarioRanker
@@ -401,36 +515,47 @@ def generate(provider, model, arch, top_n, from_catalog, output, config_path):
         sources = {e.build().name: "catalog" for e in entries}
     else:
         from chaosgen.advisor.context_builder import ContextBuilder
-        from chaosgen.advisor.llm_advisor import LLMAdvisor, build_provider
-        from chaosgen.advisor.scenario_generator import ScenarioGenerator
+        from chaosgen.advisor.pipeline import run_advisor_pipeline
+        from chaosgen.advisor.report_store import default_report_path, save_report
+        from chaosgen.advisor.scenario_ranker import ScenarioRanker
         from chaosgen.ingestion.analysis import analyze_dataset
         from chaosgen.ingestion.telemetry_factory import build_telemetry_collector
 
         click.echo(f"  Provider: {effective_provider}")
-
-        try:
-            llm_provider = build_provider(effective_provider, model=effective_model)
-        except Exception as exc:
-            click.secho(f"Provider error: {exc}", fg="red")
-            sys.exit(1)
+        if skip_gatekeeper:
+            click.secho("  WARNING: --skip-gatekeeper enabled (debug only)", fg="yellow")
 
         ctx = ContextBuilder(report).build()
-        advisor = LLMAdvisor(provider=llm_provider)
 
         try:
             collector = build_telemetry_collector(settings)
             dataset = collector.collect_baseline(duration_hours=24)
-            _, anomaly_summaries, _ = analyze_dataset(dataset)
+            clusters, anomaly_summaries, _ = analyze_dataset(dataset)
         except Exception as exc:
-            click.secho(f"  Telemetry unavailable ({exc}), generating from context only.", fg="yellow")
-            anomaly_summaries = []
+            click.secho(f"  Telemetry unavailable ({exc}), cannot run pipeline.", fg="red")
+            sys.exit(1)
 
-        hypotheses = advisor.interpret_anomalies(anomaly_summaries, context=ctx)
-        generator = ScenarioGenerator()
-        experiments = generator.generate(hypotheses)
+        if not anomaly_summaries:
+            click.secho("No anomalies detected.", fg="yellow")
+            return
+
+        advisor_report = run_advisor_pipeline(
+            clusters,
+            anomaly_summaries,
+            settings=settings,
+            lookback_hours=24.0,
+            context=ctx,
+            skip_gatekeeper=skip_gatekeeper,
+            generate_chaos=True,
+        )
+        _print_gatekeeper_table(advisor_report, show_transient=show_transient)
+        written = save_report(advisor_report, save_report_path)
+        click.echo(f"\n  Report saved to {written if save_report_path else default_report_path()}")
+
+        experiments = advisor_report.generated_experiments
         sources = {exp.name: "llm" for exp in experiments}
 
-    ranker = ScenarioRanker()
+    ranker = ScenarioRanker(history_store=get_default_history_store(settings))
     ranked = ranker.rank(experiments, sources=sources, top_n=top_n)
 
     if not ranked:
@@ -460,6 +585,203 @@ def generate(provider, model, arch, top_n, from_catalog, output, config_path):
         click.echo(f"       -> {r.rank_reason}")
 
     click.echo(f"\nRun `chaosgen run` to execute approved scenarios.")
+
+
+# ---------------------------------------------------------------------------
+# incidents
+# ---------------------------------------------------------------------------
+
+
+def _parse_since_duration(value: str):
+    """Parse durations like ``7d``, ``24h``, ``30m`` into a timedelta."""
+    from datetime import datetime, timedelta, timezone
+
+    value = value.strip().lower()
+    if value.endswith("d"):
+        delta = timedelta(days=int(value[:-1]))
+    elif value.endswith("h"):
+        delta = timedelta(hours=int(value[:-1]))
+    elif value.endswith("m"):
+        delta = timedelta(minutes=int(value[:-1]))
+    else:
+        raise click.ClickException(
+            f"Invalid --since value {value!r}; use e.g. 7d, 24h, 30m"
+        )
+    return datetime.now(timezone.utc) - delta
+
+
+@main.command("incidents")
+@click.option(
+    "--from-report", "report_path", default=None,
+    help="AdvisorReport JSON snapshot (P4). When set, queries the report instead of history.db.",
+)
+@click.option(
+    "--state",
+    type=click.Choice(["unknown", "described", "known"]),
+    default=None,
+    help="Filter by ScenarioKnowledgeState.",
+)
+@click.option("--run-id", type=int, default=None, help="Filter history.db descriptions by analysis run id.")
+@click.option("--chronic", is_flag=True, help="Show recurring REAL/CHRONIC patterns from history.db.")
+@click.option("--since", default="7d", show_default=True, help="Lookback for --chronic (e.g. 7d, 24h).")
+@click.option("--output", type=click.Choice(["table", "json"]), default="table", show_default=True)
+def incidents(report_path, state, run_id, chronic, since, output):
+    """List incidents from history.db (default) or a saved advisor report."""
+    from chaosgen.advisor.report_store import default_report_path, load_report
+    from chaosgen.schemas.scenarios import ScenarioKnowledgeState
+    from chaosgen.storage.history import get_default_history_store
+
+    if report_path is not None:
+        path = report_path or str(default_report_path())
+        try:
+            report = load_report(path)
+        except FileNotFoundError as exc:
+            raise click.ClickException(
+                f"{exc}. Run `chaosgen generate` or `chaosgen analyze --with-generate` first."
+            ) from exc
+
+        descriptions = list(report.descriptions)
+        if state:
+            target = ScenarioKnowledgeState(state)
+            descriptions = [d for d in descriptions if d.knowledge_state == target]
+
+        if output == "json":
+            click.echo(json.dumps([d.model_dump(mode="json") for d in descriptions], indent=2))
+            return
+
+        if not descriptions:
+            click.secho("No incidents match the filter.", fg="yellow")
+            return
+
+        click.secho(f"\nIncidents from report ({len(descriptions)}):\n", bold=True)
+        for desc in descriptions:
+            fallback = " [fallback]" if desc.metadata.get("describe_fallback") else ""
+            click.echo(
+                f"  [{desc.source_incident_id}] {desc.knowledge_state.value}{fallback}: "
+                f"{desc.title}"
+            )
+        return
+
+    store = get_default_history_store()
+    if store is None:
+        raise click.ClickException(
+            "History store disabled. Set history.enabled in settings or use --from-report."
+        )
+
+    if chronic:
+        since_dt = _parse_since_duration(since)
+        patterns = store.get_chronic_patterns(since_dt)
+        if output == "json":
+            click.echo(
+                json.dumps(
+                    [
+                        {
+                            "service_target": p.service_target,
+                            "error_pattern": p.error_pattern,
+                            "occurrence_count": p.occurrence_count,
+                            "last_seen": p.last_seen.isoformat(),
+                        }
+                        for p in patterns
+                    ],
+                    indent=2,
+                )
+            )
+            return
+        if not patterns:
+            click.secho("No chronic patterns in the selected window.", fg="yellow")
+            return
+        click.secho(f"\nChronic patterns since {since}:\n", bold=True)
+        for p in patterns:
+            click.echo(
+                f"  {p.service_target} | {p.error_pattern or '(no pattern)'} "
+                f"| count={p.occurrence_count} | last={p.last_seen.isoformat()}"
+            )
+        return
+
+    state_filter = ScenarioKnowledgeState(state) if state else None
+    rows = store.list_descriptions(run_id=run_id, state=state_filter)
+    if output == "json":
+        click.echo(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        click.secho("No incidents match the filter.", fg="yellow")
+        return
+
+    click.secho(f"\nIncidents from history ({len(rows)}):\n", bold=True)
+    for row in rows:
+        fallback = " [fallback]" if row["describe_fallback"] else ""
+        promoted = f" → {row['promoted_catalog_name']}" if row["promoted_catalog_name"] else ""
+        click.echo(
+            f"  [run={row['run_id']} id={row['id']} incident={row['source_incident_id']}] "
+            f"{row['knowledge_state']}{fallback}: {row['title']}{promoted}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# promote
+# ---------------------------------------------------------------------------
+
+
+@main.command("promote")
+@click.option("--from-report", "report_path", required=True, help="AdvisorReport JSON from generate/analyze.")
+@click.option("--approved-by", required=True, help="HITL operator sign-off (required).")
+@click.option("--criteria-file", required=True, type=click.Path(exists=True), help="YAML/JSON acceptance criteria.")
+@click.option("--incident-id", type=int, default=None, help="Match description.source_incident_id in report.")
+@click.option("--experiment", required=True, help="Experiment name or numeric index in report.")
+def promote(report_path, approved_by, criteria_file, incident_id, experiment):
+    """Promote a described incident into the dynamic catalog (HITL-gated)."""
+    import yaml
+
+    from chaosgen.advisor.catalog_promoter import CatalogPromoter, PromoteError
+    from chaosgen.advisor.report_store import load_report
+    from chaosgen.schemas.scenarios import ScenarioKnowledgeState
+    from chaosgen.storage.history import get_default_history_store
+
+    try:
+        report = load_report(report_path)
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    descriptions = report.descriptions
+    if incident_id is not None:
+        descriptions = [d for d in descriptions if d.source_incident_id == incident_id]
+    if not descriptions:
+        raise click.ClickException(
+            "No matching description in report"
+            + (f" for incident-id {incident_id}" if incident_id is not None else "")
+        )
+    if len(descriptions) > 1:
+        raise click.ClickException(
+            "Multiple descriptions match; specify --incident-id to disambiguate."
+        )
+    description = descriptions[0]
+
+    experiment_obj = _resolve_experiment(report, experiment)
+
+    raw = Path(criteria_file).read_text(encoding="utf-8")
+    if criteria_file.endswith((".yaml", ".yml")):
+        criteria = yaml.safe_load(raw) or {}
+    else:
+        criteria = json.loads(raw)
+
+    description_row_id = report.description_db_ids.get(description.source_incident_id)
+
+    promoter = CatalogPromoter(history_store=get_default_history_store())
+    try:
+        entry = promoter.promote(
+            description,
+            experiment_obj,
+            approved_by=approved_by,
+            acceptance_criteria=criteria,
+            name=experiment_obj.name,
+            description_row_id=description_row_id,
+        )
+    except PromoteError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.secho(f"Promoted '{entry.name}' to catalog (source=promoted).", fg="green")
+    if description.knowledge_state == ScenarioKnowledgeState.KNOWN:
+        click.echo(f"  Incident {description.source_incident_id} marked KNOWN.")
 
 
 # ---------------------------------------------------------------------------

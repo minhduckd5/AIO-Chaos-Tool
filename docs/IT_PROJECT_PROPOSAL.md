@@ -771,11 +771,19 @@ Implement trong `chaosgen/safety/governance.py` — `BlastRadiusController.valid
 
 ### 7.3 Tiêu chí nghiệm thu (Definition of Done)
 
-- [ ] `pytest` pass toàn bộ suite với coverage ≥ 70%
-- [ ] Demo E2E: discover → generate → HITL approve → run → evaluate
-- [ ] Tài liệu architecture (file này + `system_architecture_flow.plan.md`)
-- [ ] Báo cáo load test ít nhất 1 kịch bản network latency
-- [ ] Video/screenshot demo GUI + CLI
+Giai đoạn **G6: Hardening & Báo cáo** — tick khi hoàn tất từng hạng mục.
+
+| # | Tiêu chí | Deliverable / lệnh kiểm tra | Trạng thái |
+|---|----------|----------------------------|------------|
+| G6.1 | Unit & integration tests | `pytest tests/ --cov=chaosgen --cov-fail-under=70` | [ ] |
+| G6.2 | Demo E2E | `discover` → `generate` (gatekeeper) → HITL `run` → `evaluate` — xem [P6 plan](../.cursor/plans/P6-e2e-demo-dod.md) | [ ] |
+| G6.3 | Tài liệu kiến trúc | [docs/IT_PROJECT_PROPOSAL.md](IT_PROJECT_PROPOSAL.md) (file này) + [docs/pipeline-framework.md](pipeline-framework.md) (Figures 1–2; advisor scan local/gitignored) | [x] docs framework |
+| G6.4 | Load test | Ít nhất 1 kịch bản network latency trên staging/kind | [ ] |
+| G6.5 | Demo artifacts | Screenshot GUI + CLI; video demo (tùy chọn) | [ ] |
+
+**Ghi chú G6.3:** Pipeline framework (Figure 1/2), module mapping, và advisor source
+diagram đã có trong `docs/pipeline-framework.md`. Cập nhật Figure 2 (dashed → solid)
+sau mỗi phase implement (P1–P5).
 
 ---
 

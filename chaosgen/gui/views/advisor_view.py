@@ -7,19 +7,42 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Slot
-from PySide6.QtGui import QShowEvent
+from PySide6.QtGui import QColor, QShowEvent
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
     QLineEdit, QSpinBox, QPushButton, QStackedWidget,
     QTableWidget, QTableWidgetItem, QHeaderView, QTextEdit,
     QSplitter, QMessageBox, QFileDialog, QRadioButton,
     QButtonGroup, QCheckBox, QComboBox, QTabWidget,
+    QDialog, QDialogButtonBox, QPlainTextEdit,
 )
 
 from chaosgen.config.telemetry_endpoints import DEFAULT_LOKI_URL, DEFAULT_PROMETHEUS_URL
+from chaosgen.gui.advisor_presenter import (
+    description_rows,
+    gatekeeper_rows,
+    gatekeeper_summary,
+    promote_blocked_reason,
+)
 from chaosgen.gui.analysis_pipeline import AnalysisRequest, AnalysisResult
 from chaosgen.gui.theme import Colors, Fonts, Spacing
-from chaosgen.schemas.scenarios import AdvisorReport
+from chaosgen.schemas.scenarios import (
+    AdvisorReport,
+    ScenarioKnowledgeState,
+    UnknownScenarioDescription,
+)
+
+_VERDICT_COLORS = {
+    "REAL": Colors.SUCCESS,
+    "CHRONIC": Colors.ACCENT,
+    "TRANSIENT": Colors.WARNING,
+    "NOISE": Colors.TEXT_MUTED,
+}
+
+_EMPTY_SCENARIOS_MSG = (
+    "No scenarios generated — see Gatekeeper / Descriptions "
+    "(fallback incidents are not fed to chaos generation)."
+)
 
 _DEFAULT_EXPORT = Path(r"H:\Project\microservices-demo-1\local\observability-fetch\exports")
 
@@ -32,6 +55,7 @@ class AdvisorView(QWidget):
         self._controller = controller
         self._current_report: AdvisorReport | None = None
         self._current_result: AnalysisResult | None = None
+        self._current_descriptions: list[UnknownScenarioDescription] = []
         self._init_ui()
         self._connect_signals()
         self._load_defaults()
@@ -130,6 +154,9 @@ class AdvisorView(QWidget):
         self._generate_cb = QCheckBox("Generate chaos scenarios after anomaly detection")
         self._generate_cb.setChecked(True)
         llm_form.addRow(self._generate_cb)
+        self._skip_gatekeeper_cb = QCheckBox("Skip gatekeeper (debug — bypass noise filter)")
+        self._skip_gatekeeper_cb.setChecked(False)
+        llm_form.addRow(self._skip_gatekeeper_cb)
         self._provider_combo = QComboBox()
         self._provider_combo.addItems(["ollama", "openai", "anthropic", "groq"])
         self._model = QLineEdit("llama3.2:3b")
@@ -193,6 +220,52 @@ class AdvisorView(QWidget):
         self._style_table(self._anomaly_table)
         self._tabs.addTab(self._anomaly_table, "Anomalies")
 
+        # --- Gatekeeper tab (P1) ---
+        self._gatekeeper_table = QTableWidget()
+        self._gatekeeper_table.setColumnCount(8)
+        self._gatekeeper_table.setHorizontalHeaderLabels(
+            ["Cluster", "Verdict", "Freq/h", "Severity", "Log", "Service", "Describe", "Downstream"]
+        )
+        self._gatekeeper_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+        self._gatekeeper_table.verticalHeader().setVisible(False)
+        self._style_table(self._gatekeeper_table)
+        self._gatekeeper_table.currentCellChanged.connect(self._on_gatekeeper_selected)
+        self._tabs.addTab(self._gatekeeper_table, "Gatekeeper")
+
+        # --- Descriptions tab (P2) ---
+        descriptions_panel = QWidget()
+        desc_layout = QVBoxLayout(descriptions_panel)
+        desc_layout.setContentsMargins(0, 0, 0, 0)
+        desc_toolbar = QHBoxLayout()
+        desc_toolbar.addWidget(QLabel("Filter:"))
+        self._desc_filter = QComboBox()
+        self._desc_filter.addItems(["All", "Described", "Unknown", "Known"])
+        self._desc_filter.currentTextChanged.connect(lambda _: self._fill_descriptions_table())
+        desc_toolbar.addWidget(self._desc_filter)
+        desc_toolbar.addStretch()
+        self._promote_btn = QPushButton("Promote to catalog")
+        self._promote_btn.setEnabled(False)
+        self._promote_btn.setStyleSheet(
+            f"QPushButton {{ background-color: {Colors.ACCENT}; color: white; "
+            f"border: none; border-radius: 4px; padding: 6px 16px; }}"
+            f"QPushButton:disabled {{ background-color: {Colors.BG_HOVER}; color: {Colors.TEXT_MUTED}; }}"
+        )
+        self._promote_btn.clicked.connect(self._on_promote_clicked)
+        desc_toolbar.addWidget(self._promote_btn)
+        desc_layout.addLayout(desc_toolbar)
+
+        self._descriptions_table = QTableWidget()
+        self._descriptions_table.setColumnCount(5)
+        self._descriptions_table.setHorizontalHeaderLabels(
+            ["Incident", "State", "Title", "Confidence", "Fallback"]
+        )
+        self._descriptions_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self._descriptions_table.verticalHeader().setVisible(False)
+        self._style_table(self._descriptions_table)
+        self._descriptions_table.currentCellChanged.connect(self._on_description_selected)
+        desc_layout.addWidget(self._descriptions_table)
+        self._tabs.addTab(descriptions_panel, "Descriptions")
+
         self._results_table = QTableWidget()
         self._results_table.setColumnCount(4)
         self._results_table.setHorizontalHeaderLabels(["Scenario", "SCI", "Confidence", "Action"])
@@ -200,7 +273,8 @@ class AdvisorView(QWidget):
         self._results_table.verticalHeader().setVisible(False)
         self._style_table(self._results_table)
         self._results_table.currentCellChanged.connect(self._on_scenario_selected)
-        self._tabs.addTab(self._results_table, "Scenarios")
+        self._scenario_tab_index = self._tabs.addTab(self._results_table, "Scenarios")
+        self._tabs.currentChanged.connect(self._on_tab_changed)
 
         splitter.addWidget(self._tabs)
 
@@ -217,6 +291,8 @@ class AdvisorView(QWidget):
         s3.addWidget(splitter)
 
         controls = QHBoxLayout()
+        self._export_btn = QPushButton("Export report…")
+        self._export_btn.clicked.connect(self._on_export_report)
         self._reject_btn = QPushButton("Reject all scenarios")
         self._reject_btn.setStyleSheet(
             f"QPushButton {{ background-color: {Colors.DANGER}; color: white; "
@@ -226,6 +302,7 @@ class AdvisorView(QWidget):
         self._back_btn = QPushButton("New analysis")
         self._back_btn.clicked.connect(self._go_step1)
         controls.addStretch()
+        controls.addWidget(self._export_btn)
         controls.addWidget(self._back_btn)
         controls.addWidget(self._reject_btn)
         s3.addLayout(controls)
@@ -375,6 +452,7 @@ class AdvisorView(QWidget):
             generate_scenarios=self._generate_cb.isChecked(),
             llm_provider=self._provider_combo.currentText(),
             llm_model=self._model.text().strip() or None,
+            skip_gatekeeper=self._skip_gatekeeper_cb.isChecked(),
         )
 
         self._analyze_btn.setEnabled(False)
@@ -400,21 +478,30 @@ class AdvisorView(QWidget):
                 f"Source: {result.source_label}  |  "
                 f"Series: {result.metric_series}  |  "
                 f"Samples: {result.total_samples}  |  "
-                f"Log streams: {result.log_streams}  |  "
                 f"Feature windows: {result.feature_rows}  |  "
-                f"Anomalies: {len(result.clusters)}  |  "
-                f"Scenarios: {len(report.generated_experiments)}"
+                f"{gatekeeper_summary(report)}"
             )
             self._fill_anomaly_table(result.summaries)
             if result.metric_series == 0 or result.feature_rows == 0:
                 self._detail_text.setPlainText(self._empty_metrics_help(result))
         else:
             self._summary_label.setText(
-                f"Anomalies: {report.anomalies_found}  |  "
-                f"Scenarios: {len(report.generated_experiments)}"
+                f"Anomalies: {report.anomalies_found}  |  {gatekeeper_summary(report)}"
             )
 
+        self._fill_gatekeeper_table(report)
+        self._fill_descriptions_table()
         self._fill_scenario_table(report)
+        self._persist_report(report)
+
+    def _persist_report(self, report: AdvisorReport) -> None:
+        """Auto-save the report so CLI incidents/promote can read the same artifact."""
+        try:
+            from chaosgen.advisor.report_store import save_report
+
+            save_report(report)
+        except Exception as exc:
+            self._controller.log_message.emit(f"Could not save advisor report: {exc}")
 
     @staticmethod
     def _empty_metrics_help(result: AnalysisResult) -> str:
@@ -446,6 +533,16 @@ class AdvisorView(QWidget):
 
     def _fill_scenario_table(self, report: AdvisorReport):
         exps = report.generated_experiments
+        self._results_table.clearSpans()
+        self._tabs.setTabEnabled(self._scenario_tab_index, True)
+        if not exps:
+            self._results_table.setRowCount(1)
+            placeholder = QTableWidgetItem(_EMPTY_SCENARIOS_MSG)
+            placeholder.setFlags(Qt.ItemIsEnabled)
+            self._results_table.setItem(0, 0, placeholder)
+            self._results_table.setSpan(0, 0, 1, 4)
+            return
+
         self._results_table.setRowCount(len(exps))
         for i, exp in enumerate(exps):
             self._results_table.setItem(i, 0, QTableWidgetItem(exp.name))
@@ -465,10 +562,163 @@ class AdvisorView(QWidget):
             approve_btn.clicked.connect(lambda _, idx=i: self._on_approve(idx))
             self._results_table.setCellWidget(i, 3, approve_btn)
 
-        if not exps:
-            self._tabs.setTabEnabled(1, False)
-        else:
-            self._tabs.setTabEnabled(1, True)
+    def _fill_gatekeeper_table(self, report: AdvisorReport):
+        rows = gatekeeper_rows(report)
+        self._gatekeeper_table.setRowCount(len(rows))
+        for i, row in enumerate(rows):
+            cells = [
+                row["cluster"], row["verdict"], row["frequency"], row["severity"],
+                row["log"], row["service"], row["describe"], row["downstream"],
+            ]
+            for col, value in enumerate(cells):
+                item = QTableWidgetItem(value)
+                if col == 1:
+                    color = _VERDICT_COLORS.get(row["verdict"])
+                    if color:
+                        item.setForeground(QColor(color))
+                self._gatekeeper_table.setItem(i, col, item)
+
+    def _on_gatekeeper_selected(self, row, _col, _prev_row, _prev_col):
+        if not self._current_report or row < 0:
+            return
+        rows = gatekeeper_rows(self._current_report)
+        if row >= len(rows):
+            return
+        data = rows[row]
+        lines = [
+            f"Cluster {data['cluster']} — {data['verdict']}",
+            f"Frequency: {data['frequency']}/h   Severity: {data['severity']}",
+            f"Service: {data['service']}   Log correlated: {data['log']}",
+            f"Describe: {data['describe']}   Downstream: {data['downstream']}",
+            "",
+            "Rationale:",
+            data["rationale"],
+        ]
+        linked = next(
+            (d for d in self._current_report.descriptions
+             if str(d.source_incident_id) == data["cluster"]),
+            None,
+        )
+        if linked:
+            lines += [
+                "",
+                "Linked description:",
+                f"  {linked.title}",
+                f"  {linked.root_cause_hypothesis}",
+            ]
+        self._detail_text.setPlainText("\n".join(lines))
+
+    def _fill_descriptions_table(self):
+        if not self._current_report:
+            self._descriptions_table.setRowCount(0)
+            self._current_descriptions = []
+            self._promote_btn.setEnabled(False)
+            return
+        state = self._desc_filter.currentText()
+        descriptions = description_rows(self._current_report, state)
+        self._current_descriptions = descriptions
+        self._descriptions_table.setRowCount(len(descriptions))
+        for i, desc in enumerate(descriptions):
+            self._descriptions_table.setItem(i, 0, QTableWidgetItem(str(desc.source_incident_id)))
+            self._descriptions_table.setItem(i, 1, QTableWidgetItem(desc.knowledge_state.value))
+            self._descriptions_table.setItem(i, 2, QTableWidgetItem(desc.title))
+            self._descriptions_table.setItem(i, 3, QTableWidgetItem(f"{desc.confidence:.2f}"))
+            badge = "yes" if desc.metadata.get("describe_fallback") else ""
+            fallback_item = QTableWidgetItem(badge)
+            if badge:
+                fallback_item.setForeground(QColor(Colors.WARNING))
+            self._descriptions_table.setItem(i, 4, fallback_item)
+        self._promote_btn.setEnabled(False)
+
+    def _selected_description(self) -> UnknownScenarioDescription | None:
+        row = self._descriptions_table.currentRow()
+        if row < 0 or row >= len(self._current_descriptions):
+            return None
+        return self._current_descriptions[row]
+
+    def _on_description_selected(self, row, _col, _prev_row, _prev_col):
+        desc = self._selected_description()
+        if not desc:
+            self._promote_btn.setEnabled(False)
+            return
+        block = promote_blocked_reason(desc)
+        self._promote_btn.setEnabled(block is None)
+        self._promote_btn.setToolTip(block or "Promote this described incident to the catalog")
+        steps = "\n".join(f"  - {s}" for s in desc.repro_steps)
+        lines = [
+            f"=== {desc.title} ===",
+            f"State: {desc.knowledge_state.value}   Confidence: {desc.confidence:.2f}",
+            f"Incident: {desc.source_incident_id}",
+            "",
+            "Root cause hypothesis:",
+            desc.root_cause_hypothesis,
+            "",
+            "Repro steps:",
+            steps,
+            "",
+            f"Blast radius: {desc.blast_radius_estimate}",
+            f"Suggested fault type: {desc.suggested_fault_type.value}",
+        ]
+        if block:
+            lines += ["", f"[Promote disabled] {block}"]
+        self._detail_text.setPlainText("\n".join(lines))
+
+    def _on_promote_clicked(self):
+        desc = self._selected_description()
+        if not desc or not self._current_report:
+            return
+        block = promote_blocked_reason(desc)
+        if block:
+            QMessageBox.warning(self, "Cannot promote", block)
+            return
+        dialog = _PromoteDialog(desc, self._current_report.generated_experiments, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        from chaosgen.advisor.catalog_promoter import CatalogPromoter, PromoteError
+        from chaosgen.storage.history import get_default_history_store
+
+        description_row_id = None
+        if self._current_report.description_db_ids:
+            description_row_id = self._current_report.description_db_ids.get(
+                desc.source_incident_id
+            )
+
+        try:
+            entry = CatalogPromoter(history_store=get_default_history_store()).promote(
+                desc,
+                dialog.selected_experiment(),
+                approved_by=dialog.approved_by(),
+                acceptance_criteria=dialog.acceptance_criteria(),
+                name=dialog.catalog_name(),
+                description_row_id=description_row_id,
+            )
+        except (PromoteError, ValueError) as exc:
+            QMessageBox.critical(self, "Promote failed", str(exc))
+            return
+        QMessageBox.information(
+            self, "Promoted",
+            f"'{entry.name}' added to the dynamic catalog (incident {desc.source_incident_id} → KNOWN).",
+        )
+        self._controller.log_message.emit(f"Promoted scenario '{entry.name}' to catalog")
+        self._fill_descriptions_table()
+
+    def _on_export_report(self):
+        if not self._current_report:
+            QMessageBox.information(self, "No report", "Run an analysis first.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export advisor report", "advisor_report.json", "JSON (*.json)"
+        )
+        if not path:
+            return
+        from chaosgen.advisor.report_store import save_report
+
+        try:
+            save_report(self._current_report, path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        QMessageBox.information(self, "Exported", f"Report saved to {path}")
 
     @Slot(str)
     def _on_advisor_error(self, error_msg: str):
@@ -498,11 +748,17 @@ class AdvisorView(QWidget):
             lines.append(f"\nError pattern: {s.error_pattern}")
         self._detail_text.setPlainText("\n".join(lines))
 
+    def _on_tab_changed(self, index: int):
+        if index != self._scenario_tab_index or not self._current_report:
+            return
+        if not self._current_report.generated_experiments:
+            self._detail_text.setPlainText(_EMPTY_SCENARIOS_MSG)
+
     def _on_scenario_selected(self, row, _col, _prev_row, _prev_col):
         if not self._current_report or row < 0:
             return
         experiments = self._current_report.generated_experiments
-        if row >= len(experiments):
+        if not experiments or row >= len(experiments):
             return
         exp = experiments[row]
         hyp = self._current_report.hypotheses[row] if row < len(self._current_report.hypotheses) else None
@@ -530,8 +786,86 @@ class AdvisorView(QWidget):
         self._stack.setCurrentIndex(0)
         self._step_label.setText("Step 1 of 3 — Data source & endpoints")
         self._anomaly_table.setRowCount(0)
+        self._gatekeeper_table.setRowCount(0)
+        self._descriptions_table.setRowCount(0)
         self._results_table.setRowCount(0)
         self._detail_text.clear()
         self._current_report = None
         self._current_result = None
-        self._tabs.setTabEnabled(1, True)
+        self._current_descriptions = []
+        self._promote_btn.setEnabled(False)
+
+
+class _PromoteDialog(QDialog):
+    """HITL promote dialog — mirrors the CLI `promote` inputs and P3 guards."""
+
+    def __init__(self, description: UnknownScenarioDescription, experiments, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Promote to catalog")
+        self.setMinimumWidth(480)
+        self._experiments = list(experiments)
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self._name_edit = QLineEdit(description.title)
+        form.addRow("Catalog name:", self._name_edit)
+
+        self._approved_edit = QLineEdit()
+        self._approved_edit.setPlaceholderText("operator name (required)")
+        form.addRow("Approved by:", self._approved_edit)
+
+        self._experiment_combo = QComboBox()
+        for exp in self._experiments:
+            self._experiment_combo.addItem(exp.name)
+        form.addRow("Experiment:", self._experiment_combo)
+        layout.addLayout(form)
+
+        layout.addWidget(QLabel("Acceptance criteria (YAML — e.g. http_health / prometheus):"))
+        self._criteria_edit = QPlainTextEdit()
+        self._criteria_edit.setPlaceholderText(
+            "http_health: https://payments/health\n"
+            "# or:\n# prometheus:\n#   query: up{job=\"payments\"}"
+        )
+        self._criteria_edit.setMinimumHeight(120)
+        layout.addWidget(self._criteria_edit)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Promote")
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _on_accept(self):
+        if not self._approved_edit.text().strip():
+            QMessageBox.warning(self, "Missing operator", "Approved by is required.")
+            return
+        if not self._experiments:
+            QMessageBox.warning(self, "No experiment", "Report has no experiments to promote.")
+            return
+        try:
+            self.acceptance_criteria()
+        except Exception as exc:
+            QMessageBox.warning(self, "Invalid criteria", f"Could not parse criteria YAML: {exc}")
+            return
+        self.accept()
+
+    def approved_by(self) -> str:
+        return self._approved_edit.text().strip()
+
+    def catalog_name(self) -> str:
+        return self._name_edit.text().strip() or None
+
+    def selected_experiment(self):
+        return self._experiments[self._experiment_combo.currentIndex()]
+
+    def acceptance_criteria(self) -> dict:
+        import yaml
+
+        text = self._criteria_edit.toPlainText().strip()
+        if not text:
+            return {}
+        parsed = yaml.safe_load(text)
+        if parsed is not None and not isinstance(parsed, dict):
+            raise ValueError("criteria must be a YAML mapping")
+        return parsed or {}

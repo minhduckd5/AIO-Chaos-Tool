@@ -28,7 +28,7 @@ from chaosgen.advisor.context_builder import ScenarioContext
 from chaosgen.config.secrets import MissingAPIKeyError, get_key, load_secrets
 from chaosgen.schemas.discovery import ArchitectureType
 from chaosgen.schemas.faults import FaultType
-from chaosgen.schemas.scenarios import AnomalySummary, FaultHypothesis
+from chaosgen.schemas.scenarios import AnomalySummary, FaultHypothesis, UnknownScenarioDescription
 
 logger = logging.getLogger(__name__)
 
@@ -137,10 +137,30 @@ def _build_system_prompt(arch_type: ArchitectureType) -> str:
     return _BASE_SYSTEM_PROMPT.format(arch_suffix=suffix, fault_types=fault_types_str)
 
 
-def _build_user_prompt(context: ScenarioContext, summary: AnomalySummary) -> str:
+def _build_user_prompt(
+    context: ScenarioContext,
+    summary: AnomalySummary,
+    description_block: str = "",
+) -> str:
+    anomaly_block = summary.to_prompt_block()
+    if description_block:
+        anomaly_block = f"{anomaly_block}\n\n{description_block}"
     return _USER_PROMPT_TEMPLATE.format(
         context_block=context.to_prompt_text(),
-        anomaly_block=summary.to_prompt_block(),
+        anomaly_block=anomaly_block,
+    )
+
+
+def _description_prompt_block(description: UnknownScenarioDescription) -> str:
+    steps = "\n".join(f"  - {step}" for step in description.repro_steps)
+    return (
+        "=== PRIOR STRUCTURED INCIDENT DESCRIPTION (P2) ===\n"
+        f"Title: {description.title}\n"
+        f"Root cause hypothesis: {description.root_cause_hypothesis}\n"
+        f"Repro steps:\n{steps}\n"
+        f"Blast radius: {description.blast_radius_estimate}\n"
+        f"Suggested fault type: {description.suggested_fault_type.value}\n"
+        f"Describe confidence: {description.confidence:.2f}"
     )
 
 
@@ -442,23 +462,29 @@ class LLMAdvisor:
         self,
         summaries: list[AnomalySummary],
         context: ScenarioContext | None = None,
+        descriptions_by_cluster: dict[int, UnknownScenarioDescription] | None = None,
     ) -> list[FaultHypothesis]:
         """
         Process a batch of AnomalySummary objects and return FaultHypothesis objects.
         If ScenarioContext is provided, architecture-specific prompts are used.
+        Optional P2 descriptions enrich the user prompt per cluster.
         """
         arch = context.architecture_type if context else ArchitectureType.UNKNOWN
         system_prompt = _build_system_prompt(arch)
+        desc_map = descriptions_by_cluster or {}
 
         hypotheses: list[FaultHypothesis] = []
         for summary in summaries:
-            user_prompt = (
-                _build_user_prompt(context, summary)
-                if context
-                else USER_PROMPT_TEMPLATE_LEGACY.format(
-                    anomaly_block=summary.to_prompt_block()
-                )
-            )
+            desc_block = ""
+            if summary.source_cluster_id in desc_map:
+                desc_block = _description_prompt_block(desc_map[summary.source_cluster_id])
+            if context:
+                user_prompt = _build_user_prompt(context, summary, desc_block)
+            else:
+                base = summary.to_prompt_block()
+                if desc_block:
+                    base = f"{base}\n\n{desc_block}"
+                user_prompt = USER_PROMPT_TEMPLATE_LEGACY.format(anomaly_block=base)
             h = self._interpret_single(system_prompt, user_prompt, summary.source_cluster_id)
             if h is not None:
                 hypotheses.append(h)

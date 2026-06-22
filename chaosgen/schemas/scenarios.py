@@ -1,9 +1,11 @@
+import re
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from chaosgen.schemas.faults import ChaosExperiment, FaultType
+from chaosgen.schemas.incidents import IncidentCandidate
 
 
 class AnomalySeverity(str, Enum):
@@ -108,13 +110,108 @@ class ScenarioComplexityIndex(BaseModel):
         return self.weighted_score
 
 
+# Vague phrases that disqualify a root-cause hypothesis. Matched with word
+# boundaries so technical prose ("the timeout could be raised to 5s") is not
+# falsely rejected unless the phrase stands as a hedge on its own.
+_VAGUE_ROOT_CAUSE_TERMS = (
+    "something wrong",
+    "maybe",
+    "could be",
+    "unknown error",
+    "not sure",
+    "possibly",
+    "might be",
+)
+
+
+class ScenarioKnowledgeState(str, Enum):
+    """Lifecycle of a scenario along the Unknown -> Known advisor loop."""
+    UNKNOWN = "unknown"
+    DESCRIBED = "described"
+    KNOWN = "known"
+    CHAOS_TESTED = "chaos_tested"
+    VERIFIED = "verified"
+
+
+class ExperimentVerdict(str, Enum):
+    """Outcome of a verify run against a known scenario's acceptance criteria.
+
+    PARTIAL encodes accepted residual risk: the advisor's `100%?` -> No loop does
+    not chase a perfect score, it records the gap and routes back to design.
+    """
+    PASS = "pass"
+    PARTIAL = "partial"
+    FAIL = "fail"
+
+
+class UnknownScenarioDescription(BaseModel):
+    """
+    Structured description of a gatekeeper-confirmed incident (P2).
+
+    Guardrails are enforced here (Field constraints + validators) rather than in
+    the prompt alone, so instructor feeds any ValidationError back to the LLM for
+    a retry. Separate from FaultHypothesis: this models knowledge refinement, not
+    chaos execution.
+    """
+    title: str = Field(min_length=5)
+    root_cause_hypothesis: str = Field(min_length=10)
+    repro_steps: List[str] = Field(min_length=2)
+    blast_radius_estimate: str = Field(min_length=5)
+    suggested_fault_type: FaultType
+    confidence: float = Field(ge=0.0, le=1.0)
+    source_incident_id: int
+    knowledge_state: ScenarioKnowledgeState = ScenarioKnowledgeState.DESCRIBED
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("repro_steps")
+    @classmethod
+    def repro_steps_non_empty(cls, steps: List[str]) -> List[str]:
+        if any(not s.strip() for s in steps):
+            raise ValueError("repro_steps must not contain empty strings")
+        return steps
+
+    @field_validator("root_cause_hypothesis")
+    @classmethod
+    def reject_vague_root_cause(cls, value: str) -> str:
+        lower = value.lower()
+        for term in _VAGUE_ROOT_CAUSE_TERMS:
+            if re.search(rf"(?:^|[\s,.]){re.escape(term)}(?:[\s,.]|$)", lower):
+                raise ValueError(f"Vague root cause detected: {term!r}")
+        return value
+
+
 class AdvisorReport(BaseModel):
     """Output of a full ChaosAdvisor analysis-and-recommend cycle."""
     anomalies_found: int
     clusters: List[AnomalyCluster] = Field(default_factory=list)
     summaries: List[AnomalySummary] = Field(default_factory=list)
+    incident_candidates: List[IncidentCandidate] = Field(
+        default_factory=list,
+        description="Gatekeeper-evaluated anomaly clusters (P1)",
+    )
+    filtered_noise_count: int = Field(
+        0, description="Number of clusters dropped as NOISE by the gatekeeper (P1)"
+    )
+    filtered_transient_count: int = Field(
+        0, description="Number of TRANSIENT clusters (monitor-only, P1)"
+    )
+    descriptions: List[UnknownScenarioDescription] = Field(
+        default_factory=list,
+        description="Structured describe output for REAL/CHRONIC incidents (P2)",
+    )
     hypotheses: List[FaultHypothesis] = Field(default_factory=list)
     dropped_hypotheses: int = Field(0, description="Hypotheses below confidence threshold")
     generated_experiments: List[ChaosExperiment] = Field(default_factory=list)
     manifest_paths: List[str] = Field(default_factory=list)
     sci_scores: List[ScenarioComplexityIndex] = Field(default_factory=list)
+    run_id: Optional[int] = Field(
+        None, description="SQLite analysis_runs.id when history persistence is enabled (P5)"
+    )
+    description_db_ids: Dict[int, int] = Field(
+        default_factory=dict,
+        description="source_incident_id → descriptions.id (P5)",
+    )
+    experiment_db_ids: Dict[str, int] = Field(
+        default_factory=dict,
+        description="experiment.name → experiments.id (P5)",
+    )

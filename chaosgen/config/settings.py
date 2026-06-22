@@ -75,6 +75,41 @@ class UserHints(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Gatekeeper settings (P1 — Gatekeeper Real Filter)
+# ---------------------------------------------------------------------------
+
+
+class GatekeeperSettings(BaseModel):
+    """Thresholds and rules for the incident gatekeeper (`?? real ??`)."""
+
+    frequency_low_threshold: float = 0.5   # events/hour
+    frequency_high_threshold: float = 2.0
+    severity_low_threshold: float = 0.4
+    severity_high_threshold: float = 0.75
+    log_correlation_boost: bool = True
+    strict_log_boost: bool = True
+    severe_log_keywords: list[str] = Field(
+        default_factory=lambda: ["error", "fatal", "critical"]
+    )
+    ignore_log_keywords: list[str] = Field(
+        default_factory=lambda: ["warning", "warn", "deprecation", "info"]
+    )
+
+
+# ---------------------------------------------------------------------------
+# History settings (P5 — SQLite History Loop)
+# ---------------------------------------------------------------------------
+
+
+class HistorySettings(BaseModel):
+    """SQLite analytics history (not runtime SOT — see P5 plan §0)."""
+
+    enabled: bool = True
+    db_path: str | None = None
+    async_writes: bool = True
+
+
+# ---------------------------------------------------------------------------
 # Top-level settings
 # ---------------------------------------------------------------------------
 
@@ -83,6 +118,8 @@ class ChaosGenSettings(BaseModel):
     hints: UserHints = Field(default_factory=UserHints)
     llm_provider: str = "ollama"
     llm_model: str | None = None
+    gatekeeper: GatekeeperSettings = Field(default_factory=GatekeeperSettings)
+    history: HistorySettings = Field(default_factory=HistorySettings)
 
 
 # ---------------------------------------------------------------------------

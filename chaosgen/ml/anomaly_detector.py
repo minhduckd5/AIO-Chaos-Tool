@@ -232,6 +232,8 @@ class AnomalyDetector:
 
         top3 = cluster.dominant_features[:3]
 
+        error_pattern = AnomalyDetector._derive_error_pattern(cluster)
+
         if cluster.sample_timestamps:
             start_ts = min(cluster.sample_timestamps)
             end_ts = max(cluster.sample_timestamps)
@@ -244,8 +246,24 @@ class AnomalyDetector:
         return AnomalySummary(
             service_name=service,
             top_features=top3,
-            error_pattern=None,
+            error_pattern=error_pattern,
             severity=severity_map.get(cluster.severity, 0.5),
             time_window=time_window,
             source_cluster_id=cluster.cluster_id,
         )
+
+    @staticmethod
+    def _derive_error_pattern(cluster: AnomalyCluster) -> Optional[str]:
+        """
+        Derive a log error pattern from dominant features.
+
+        The log-derived columns `error_rate` / `error_count` count ERROR/FATAL/
+        CRITICAL/PANIC log lines (see FeatureEngineer._extract_log_features), so a
+        dominating error feature is treated as a severe log signal. Returns a
+        string containing a severe keyword (consumed by the gatekeeper), or None.
+        """
+        for feat_name, score in cluster.dominant_features:
+            lowered = feat_name.lower()
+            if "error_rate" in lowered or "error_count" in lowered:
+                return f"error: elevated {feat_name} (z={score:.2f})"
+        return None

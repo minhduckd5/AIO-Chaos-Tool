@@ -3,18 +3,18 @@ Chaos Advisor: End-to-end pipeline from telemetry analysis to
 executable chaos experiment generation.
 
 Pipeline: TelemetryCollector -> FeatureEngineer -> AnomalyDetector
-          -> LLMAdvisor -> ScenarioGenerator -> ManifestWriter
+          -> run_advisor_pipeline (gatekeeper -> describer -> LLM -> generate)
 """
 
 import logging
 from typing import Dict, List, Optional
 
-from chaosgen.ingestion.collector import TelemetryCollector
-from chaosgen.ml.feature_engineering import FeatureEngineer
-from chaosgen.ml.anomaly_detector import AnomalyDetector
-from chaosgen.ml.llm_advisor import LLMAdvisor
-from chaosgen.advisor.scenario_generator import ScenarioGenerator
 from chaosgen.advisor.manifest_writer import ManifestWriter
+from chaosgen.advisor.pipeline import run_advisor_pipeline
+from chaosgen.config.settings import ChaosGenSettings, load_settings
+from chaosgen.ingestion.collector import TelemetryCollector
+from chaosgen.ml.anomaly_detector import AnomalyDetector
+from chaosgen.ml.feature_engineering import FeatureEngineer
 from chaosgen.schemas.faults import TargetSpec
 from chaosgen.schemas.scenarios import AdvisorReport
 from chaosgen.safety.governance import SafetyPolicy
@@ -35,16 +35,21 @@ class ChaosAdvisor:
         safety_policy: Optional[SafetyPolicy] = None,
         confidence_threshold: float = 0.6,
         output_dir: str = "./generated_scenarios",
+        settings: Optional[ChaosGenSettings] = None,
+        skip_gatekeeper: bool = False,
     ):
         self.collector = collector
         self.feature_engineer = FeatureEngineer()
         self.anomaly_detector = AnomalyDetector()
-        self.llm_advisor = LLMAdvisor(model=model_name, base_url=ollama_url)
-        self.scenario_generator = ScenarioGenerator(
-            safety_policy=safety_policy,
-            confidence_threshold=confidence_threshold,
+        self.settings = settings or ChaosGenSettings(
+            llm_provider="ollama",
+            llm_model=model_name,
         )
-        self.manifest_writer = ManifestWriter(output_dir=output_dir)
+        if self.settings.llm_model is None:
+            self.settings.llm_model = model_name
+        self.confidence_threshold = confidence_threshold
+        self.output_dir = output_dir
+        self.skip_gatekeeper = skip_gatekeeper
         self._is_trained = False
 
     def train_baseline(self, duration_hours: int = 168) -> None:
@@ -68,15 +73,10 @@ class ChaosAdvisor:
         lookback_hours: int = 24,
         available_targets: Optional[Dict[str, TargetSpec]] = None,
         write_manifests: bool = True,
+        context=None,
     ) -> AdvisorReport:
         """
-        Full pipeline execution:
-        1. Collect recent telemetry
-        2. Extract features
-        3. Detect anomalies and compress to summaries
-        4. Generate fault hypotheses via LLM
-        5. Convert to ChaosExperiments
-        6. Write YAML manifests
+        Full pipeline execution via shared ``run_advisor_pipeline``.
         """
         if not self._is_trained:
             raise RuntimeError("Must call train_baseline() before analyze_and_recommend().")
@@ -94,41 +94,17 @@ class ChaosAdvisor:
             logger.info("No anomalies detected in the last %d hours.", lookback_hours)
             return AdvisorReport(anomalies_found=0)
 
-        hypotheses = self.llm_advisor.interpret_anomalies(summaries)
-        experiments = self.scenario_generator.generate(hypotheses, available_targets)
-
-        manifest_paths: List[str] = []
-        sci_scores = []
-        if write_manifests:
-            for exp in experiments:
-                try:
-                    litmus_path = self.manifest_writer.write_litmus(exp)
-                    manifest_paths.append(str(litmus_path))
-                except Exception as e:
-                    logger.warning("Litmus manifest generation failed: %s", e)
-                try:
-                    cm_path = self.manifest_writer.write_chaosmesh(exp)
-                    manifest_paths.append(str(cm_path))
-                except Exception as e:
-                    logger.warning("ChaosMesh manifest generation failed: %s", e)
-
-                sci = ScenarioGenerator.compute_sci(exp)
-                sci.compute()
-                sci_scores.append(sci)
-
-        dropped = len(hypotheses) - len(
-            [h for h in hypotheses if h.confidence >= self.scenario_generator.confidence_threshold]
-        )
-
-        report = AdvisorReport(
-            anomalies_found=len(clusters),
-            clusters=clusters,
-            summaries=summaries,
-            hypotheses=hypotheses,
-            dropped_hypotheses=dropped,
-            generated_experiments=experiments,
-            manifest_paths=manifest_paths,
-            sci_scores=sci_scores,
+        report = run_advisor_pipeline(
+            clusters,
+            summaries,
+            settings=self.settings,
+            lookback_hours=float(lookback_hours),
+            context=context,
+            skip_gatekeeper=self.skip_gatekeeper,
+            generate_chaos=True,
+            write_manifests=write_manifests,
+            output_dir=self.output_dir,
+            confidence_threshold=self.confidence_threshold,
         )
 
         logger.info(

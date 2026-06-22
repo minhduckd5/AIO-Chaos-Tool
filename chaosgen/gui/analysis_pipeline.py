@@ -8,8 +8,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from chaosgen.advisor.context_builder import ContextBuilder
-from chaosgen.advisor.llm_advisor import LLMAdvisor, build_provider
-from chaosgen.advisor.scenario_generator import ScenarioGenerator
+from chaosgen.advisor.pipeline import run_advisor_pipeline
 from chaosgen.config.settings import load_settings
 from chaosgen.discovery import resolve_discovery_report
 from chaosgen.ingestion.analysis import analyze_dataset
@@ -32,6 +31,7 @@ class AnalysisRequest:
     llm_provider: str = "ollama"
     llm_model: str | None = None
     config_path: str | None = None
+    skip_gatekeeper: bool = False
 
 
 @dataclass
@@ -59,6 +59,8 @@ def test_llm_provider(provider: str, model: str | None = None) -> tuple[bool, st
         return False, cred_msg
 
     try:
+        from chaosgen.advisor.llm_advisor import build_provider
+
         llm = build_provider(provider, model=model)
         ok, probe_msg = llm.probe()
         if ok:
@@ -95,28 +97,24 @@ def run_analysis(request: AnalysisRequest) -> AnalysisResult:
 
     if request.generate_scenarios and summaries:
         settings = load_settings(request.config_path)
+        if request.llm_provider:
+            settings = settings.model_copy(
+                update={
+                    "llm_provider": request.llm_provider,
+                    "llm_model": request.llm_model or settings.llm_model,
+                }
+            )
         discovery = resolve_discovery_report(settings=settings)
         ctx = ContextBuilder(discovery).build()
-        provider = build_provider(
-            request.llm_provider or settings.llm_provider,
-            model=request.llm_model or settings.llm_model,
+        report = run_advisor_pipeline(
+            clusters,
+            summaries,
+            settings=settings,
+            lookback_hours=float(request.lookback_hours),
+            context=ctx,
+            skip_gatekeeper=request.skip_gatekeeper,
+            generate_chaos=True,
         )
-        advisor = LLMAdvisor(provider=provider)
-        hypotheses = advisor.interpret_anomalies(summaries, context=ctx)
-        generator = ScenarioGenerator()
-        experiments = generator.generate(hypotheses)
-        dropped = len(hypotheses) - len(experiments)
-
-        sci_scores = []
-        for exp in experiments:
-            sci = ScenarioGenerator.compute_sci(exp)
-            sci.compute()
-            sci_scores.append(sci)
-
-        report.hypotheses = hypotheses
-        report.dropped_hypotheses = dropped
-        report.generated_experiments = experiments
-        report.sci_scores = sci_scores
 
     return AnalysisResult(
         source_label=source_label,

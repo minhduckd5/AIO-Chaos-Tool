@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
 from chaosgen.schemas.discovery import ArchitectureType
 from chaosgen.schemas.faults import (
@@ -41,6 +41,8 @@ class CatalogEntry:
     fault_type: FaultType
     experiment_factory: Callable[[], ChaosExperiment]
     tags: list[str] = field(default_factory=list)
+    source: str = "builtin"  # "builtin" | "promoted"
+    acceptance_criteria: dict[str, Any] | None = None
 
     def build(self) -> ChaosExperiment:
         return self.experiment_factory()
@@ -342,8 +344,20 @@ _CATALOG_ENTRIES: list[CatalogEntry] = [
 
 
 class ScenarioCatalog:
-    def __init__(self) -> None:
+    def __init__(self, promoted_store: Any = None) -> None:
         self._entries = _CATALOG_ENTRIES
+        self._promoted_store = promoted_store
+
+    def _promoted(self, architecture: ArchitectureType) -> list[CatalogEntry]:
+        """Load HITL-promoted entries for an architecture. Never raises."""
+        # Lazy import keeps the dependency one-directional (promoted_store imports
+        # CatalogEntry from this module).
+        if self._promoted_store is None:
+            from chaosgen.advisor import promoted_store as ps
+            store = ps.get_default_store()
+        else:
+            store = self._promoted_store
+        return store.load_safe(architecture)
 
     def get(
         self,
@@ -352,6 +366,7 @@ class ScenarioCatalog:
     ) -> list[CatalogEntry]:
         """Return entries matching the given architecture and optional fault type."""
         results = [e for e in self._entries if e.architecture == architecture]
+        results += self._promoted(architecture)
         if fault_type is not None:
             results = [e for e in results if e.fault_type == fault_type]
         return results

@@ -17,3 +17,14 @@ hints:
 
 llm_provider: ollama
 llm_model: llama3.2:3b
+
+# Gatekeeper (?? real ??) — frequency x severity matrix + strict log boost (P1)
+gatekeeper:
+  frequency_low_threshold: 0.5    # events/hour
+  frequency_high_threshold: 2.0
+  severity_low_threshold: 0.4
+  severity_high_threshold: 0.75
+  log_correlation_boost: true
+  strict_log_boost: true
+  severe_log_keywords: ["error", "fatal", "critical"]
+  ignore_log_keywords: ["warning", "warn", "deprecation", "info"]

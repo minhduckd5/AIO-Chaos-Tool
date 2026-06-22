@@ -1,23 +1,41 @@
+> **Thesis / research prototype — not for production or open-source use yet.**  
+> This repository supports an **academic graduation thesis** (research and evaluation only).
+> It is **not** offered as a supported open-source product: APIs, safety behavior, and
+> docs may change without notice. Do not deploy against production systems until an
+> explicit release is announced.
+
 # ChaosGen
 
 [![License](https://img.shields.io/github/license/minhduckd5/ChaosGen)](LICENSE)
 [![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-**AI-Driven Chaos Scenario Generator** — Automatically discovers your system architecture, detects the existing observability stack, and uses an LLM pipeline (local Ollama or cloud providers) to generate, rank, and execute targeted chaos experiments with a Human-in-the-Loop approval gate.
+**AI-Driven Chaos Scenario Generator** — Uses telemetry signals and an LLM pipeline (local Ollama or cloud providers) to generate, rank, and execute targeted chaos experiments with a Human-in-the-Loop approval gate.
 
 ## Overview
 
 ChaosGen replaces manual chaos scenario authoring with an AI pipeline that:
 
 1. **Ingests** telemetry (Prometheus metrics + Loki logs) and detects anomalies
-2. **Focuses** on **microservices** architecture first (discovery auto-probe temporarily scoped off)
+2. **Operates** in **microservices profile mode** (architecture auto-discovery deferred)
 3. **Generates** context-aware chaos scenarios via LLM or the pre-built catalog
 4. **Ranks** scenarios by confidence, historical value, coverage gap, and safety margin
 5. **Runs** approved experiments through a state-machine orchestrator with HITL gate and rollback
 6. **Evaluates** results via KPI tracker and A/B comparison
 
-> Other architecture types (monolith, event-driven, serverless, client-server) and full hybrid
-> discovery will be re-enabled incrementally. See [Pipeline Framework](docs/pipeline-framework.md).
+### Research focus (USP)
+
+ChaosGen is not only an AI chaos scenario generator. The pipeline filters anomalies
+through a **gatekeeper** (frequency × severity) to separate real incidents from noise,
+forces **unknown** failure patterns through a structured **describe** step, and
+**promotes** validated scenarios into a **known** catalog after human approval (HITL).
+Those scenarios re-enter the chaos pipeline for verification with accepted **residual
+risk** — moving from reactive firefighting toward **predictive maintenance**.
+
+See the advisor framework and module mapping in [Pipeline Framework](docs/pipeline-framework.md)
+(Figure 1: research model; Figure 2: ChaosGen implementation).
+
+> Architecture auto-discovery (monolith, event-driven, serverless, client-server) is
+> deferred to a later phase after the core Unknown→Known loop is stable.
 
 ## Integrated Chaos Tools
 
@@ -175,8 +193,8 @@ chaosgen/
 ├── cli.py                    # Click command groups
 ├── orchestrator.py           # State-machine engine + HITL gate
 ├── config/
-│   └── scope.py              # Microservices-first scope guard (discovery toggle)
-├── discovery/                # Hybrid discovery (scoped off — code retained)
+│   └── scope.py              # Active microservices profile (manual mode)
+├── discovery/                # Deferred capability (not in active runtime path)
 │   ├── environment_probe.py
 │   ├── architecture_classifier.py
 │   ├── service_mapper.py

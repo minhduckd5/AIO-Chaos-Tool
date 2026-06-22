@@ -24,6 +24,7 @@ from chaosgen.schemas.faults import ChaosExperiment, FaultType
 if TYPE_CHECKING:
     from chaosgen.evaluation.kpi_tracker import KPITracker
     from chaosgen.safety.governance import BlastRadiusController
+    from chaosgen.storage.history import HistoryStore
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +61,11 @@ class ScenarioRanker:
         self,
         kpi_tracker: "KPITracker | None" = None,
         blast_radius_controller: "BlastRadiusController | None" = None,
+        history_store: "HistoryStore | None" = None,
     ) -> None:
         self._kpi = kpi_tracker
         self._blast = blast_radius_controller
+        self._history = history_store
 
     # ------------------------------------------------------------------
     # Public API
@@ -218,8 +221,14 @@ class ScenarioRanker:
     def _get_recent_fault_types(self) -> set[FaultType]:
         """
         Return fault types from experiments run within the recency window.
-        Falls back to empty set when KPITracker unavailable.
+        Prefers P5 history DB; falls back to KPITracker when unavailable.
         """
+        if self._history is not None:
+            try:
+                return self._history.recent_fault_types(days=7)
+            except Exception as exc:
+                logger.debug("HistoryStore recent_fault_types failed: %s", exc)
+
         if self._kpi is None:
             return set()
         try:

@@ -39,12 +39,13 @@ class ChaosOrchestrator:
 
     states = ['idle', 'pending_approval', 'steady_state_check', 'injecting', 'verifying', 'rollback']
 
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None, history_store=None):
         """
         Initialize the chaos orchestrator.
         
         Args:
             config_path: Path to configuration file
+            history_store: Optional P5 analytics store for experiment verdicts
         """
         self.config_loader = ConfigLoader(config_path) if config_path else ConfigLoader()
         self.modules: Dict[str, BaseChaosModule] = {}
@@ -55,6 +56,9 @@ class ChaosOrchestrator:
         self.blast_radius_controller = BlastRadiusController()
         self.dead_mans_switch: Optional[DeadMansSwitch] = None
         self.logger = logging.getLogger("ChaosOrchestrator")
+        self.history_store = history_store
+        self._current_experiment_db_id: Optional[int] = None
+        self._experiment_db_ids: Dict[str, int] = {}
 
         # HITL approval queue for AI-generated experiments
         self.pending_experiments: List[ChaosExperiment] = []
@@ -208,6 +212,20 @@ class ChaosOrchestrator:
         else:
              self.logger.warning("Verification failed! System did not recover.")
              # We might want to trigger rollback here if not already done, or just log.
+
+        if self.history_store and self._current_experiment_db_id is not None:
+            from datetime import datetime, timezone
+            from chaosgen.schemas.scenarios import ExperimentVerdict
+
+            verdict = ExperimentVerdict.PASS if success else ExperimentVerdict.FAIL
+            try:
+                self.history_store.update_verdict(
+                    self._current_experiment_db_id,
+                    verdict,
+                    datetime.now(timezone.utc),
+                )
+            except Exception as exc:
+                self.logger.warning("History update_verdict failed: %s", exc)
         
         self.verification_complete()
 
@@ -254,6 +272,7 @@ class ChaosOrchestrator:
 
         self.pending_report = report
         self.pending_experiments = list(report.generated_experiments)
+        self._experiment_db_ids = dict(getattr(report, "experiment_db_ids", {}) or {})
         self.logger.info(
             "Submitted %d AI-generated experiments for approval.",
             len(self.pending_experiments),
@@ -271,6 +290,9 @@ class ChaosOrchestrator:
             return
 
         self.current_experiment = self.pending_experiments[experiment_index]
+        self._current_experiment_db_id = self._experiment_db_ids.get(
+            self.current_experiment.name
+        )
         self.logger.info("Approved experiment: %s", self.current_experiment.name)
         self.approve_experiment()
 
@@ -284,6 +306,8 @@ class ChaosOrchestrator:
         """Clear the pending experiments queue."""
         self.pending_experiments = []
         self.pending_report = None
+        self._current_experiment_db_id = None
+        self._experiment_db_ids = {}
 
     def get_pending_experiments(self) -> List[ChaosExperiment]:
         """Return the list of experiments awaiting approval."""
