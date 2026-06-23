@@ -1,156 +1,153 @@
-# Getting Started with AIO Chaos Tool
+# Getting Started with ChaosGen
+
+> **Thesis / lab use only** — not a production-ready product. Use staging or local
+> clusters you own. See the disclaimer at the top of [README.md](../README.md).
+
+This guide is a **short operator path**. README covers telemetry options in depth;
+this file focuses on install, config paths, and the **advisor loop** (P4 commands).
 
 ## Prerequisites
 
-- Python 3.8 or higher
-- pip package manager
-- Basic understanding of chaos engineering principles
+- Python **3.10+**
+- `pip` and a virtual environment (recommended)
+- For live analysis: reachable **Prometheus** and **Loki** (or an offline export bundle)
+- For LLM steps: **Ollama** locally (default) or cloud API keys in `.env`
 
 ## Installation
 
-### Step 1: Clone the Repository
+```bash
+git clone https://github.com/minhduckd5/ChaosGen.git
+cd ChaosGen
+python -m venv .venv
+# Windows:  .venv\Scripts\activate
+# Linux/mac: source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+Desktop GUI (optional):
 
 ```bash
-git clone https://github.com/minhduckd5/AIO-Chaos-Tool.git
-cd AIO-Chaos-Tool
+pip install -e ".[gui]"
+python -m chaosgen.gui.main
 ```
 
-### Step 2: Install Dependencies
+## Config paths
+
+ChaosGen uses XDG-style paths (not a repo-local config):
+
+| OS | Config directory |
+|----|------------------|
+| Linux / macOS | `~/.config/chaosgen/` |
+| Windows | `%APPDATA%/chaosgen/` |
+
+| File | Purpose |
+|------|---------|
+| `settings.yaml` | Observability URLs, gatekeeper thresholds, LLM provider |
+| `.env` | API keys (`OPENAI_API_KEY`, etc.) — **never commit** |
+| `last_report.json` | Latest advisor report (auto-saved from GUI / `--save-report`) |
+| `history.db` | Cross-run analytics (P5; enabled by default) |
+
+Initialize from the registry-vm example:
 
 ```bash
-pip install -r requirements.txt
+chaosgen config init
+# or copy examples/registry-vm-settings.yaml into your config dir
 ```
 
-### Step 3: Install the Package
+## Verify connectivity
 
 ```bash
-pip install -e .
+chaosgen analyze --check
 ```
 
-## First Steps
-
-### Verify Installation
+Offline bundle (no live Prometheus/Loki):
 
 ```bash
-aio-chaos --version
+chaosgen analyze --export /path/to/observability-export
 ```
 
-### List Available Modules
+## Advisor loop (core thesis workflow)
+
+### 1. Analyze + generate scenarios
 
 ```bash
-aio-chaos list-modules
+# Live stack
+chaosgen analyze
+chaosgen generate --save-report ./report.json
+
+# Or analyze + generate in one step
+chaosgen analyze --generate --top-n 5
 ```
 
-You should see output like:
-```
-Available Chaos Modules:
-----------------------------------------
-  • chaos-toolkit
-  • kube-monkey
-  • pumba
-  • chaos-monkey
-  • toxiproxy
-  • muxy
-```
+Gatekeeper may leave **zero scenarios** when all clusters are NOISE/TRANSIENT or
+describe fallbacks — that is expected. See [Best Practices](best-practices.md).
 
-### Check Available Actions
+Debug only (bypass gatekeeper):
 
 ```bash
-aio-chaos list-actions
+chaosgen generate --skip-gatekeeper --save-report ./report.json
 ```
 
-### Check Module Status
+### 2. Inspect incidents
 
 ```bash
-aio-chaos status
+# From saved report (P4 snapshot)
+chaosgen incidents --from-report ./report.json
+
+# From SQLite history (P5 default)
+chaosgen incidents
+chaosgen incidents --chronic --since 7d
 ```
 
-## Creating Your First Configuration
+### 3. Promote a validated scenario (HITL)
 
-Create a file called `my-config.yaml`:
-
-```yaml
-global:
-  log_level: info
-
-modules:
-  pumba:
-    target_containers:
-      - "my-container"
-    interval: "10s"
-  
-  toxiproxy:
-    host: localhost
-    port: 8474
-```
-
-Use your configuration:
+Requires a criteria file and explicit approval:
 
 ```bash
-aio-chaos --config my-config.yaml status
+# criteria.yaml example:
+# http_health: https://your-service/health
+
+chaosgen promote --from-report ./report.json \
+  --incident-id 0 --experiment 0 \
+  --approved-by "your-name" \
+  --criteria-file ./criteria.yaml
 ```
 
-## Running Your First Chaos Experiment
+Promoted entries land in `promoted_scenarios.json` and re-enter the catalog.
 
-### Example 1: Container Chaos with Pumba
+### 4. Run approved experiments
 
 ```bash
-# Simulate killing a container
-aio-chaos execute \
-  --module pumba \
-  --action kill_container \
-  --params '{"container": "my-app", "signal": "SIGKILL"}'
+chaosgen run --dry-run    # validate first
+chaosgen run              # interactive HITL per scenario
 ```
 
-### Example 2: Network Chaos with Toxiproxy
+### 5. Evaluate
 
 ```bash
-# Simulate network latency
-aio-chaos execute \
-  --module toxiproxy \
-  --action add_latency \
-  --params '{"proxy_name": "redis", "latency": 1000}'
+chaosgen evaluate
+chaosgen evaluate --ab
 ```
 
-### Example 3: Kubernetes Chaos with Kube-Monkey
+## GUI equivalent
 
-```bash
-# Simulate pod termination
-aio-chaos execute \
-  --module kube-monkey \
-  --action terminate_pods \
-  --params '{"namespace": "default", "count": 1}'
-```
-
-## Next Steps
-
-1. Read the [Architecture Guide](architecture.md) to understand how the tool works
-2. Explore [Example Configurations](../examples/) for more complex scenarios
-3. Learn about individual chaos tools in the [Module Documentation](modules.md)
-4. Review [Best Practices](best-practices.md) for chaos engineering
+Open the **Advisor** view: run analysis, review **Gatekeeper** / **Descriptions** tabs,
+export report, promote via dialog. Scenarios tab shows a message when the pipeline
+produces zero experiments after filtering.
 
 ## Troubleshooting
 
-### Command Not Found
+| Symptom | Likely cause |
+|---------|----------------|
+| `command not found: chaosgen` | Activate venv; run `pip install -e ".[dev]"` |
+| Gatekeeper rows but 0 scenarios | TRANSIENT verdict or describe fallback — not a bug |
+| LLM errors | Missing key in `.env` or Ollama not running |
+| Empty Prometheus series | Use `--export` bundle or check `settings.yaml` URLs |
 
-If you get "command not found" error, ensure the package is installed:
+## Next steps
 
-```bash
-pip install -e .
-```
-
-### Module Not Found
-
-If you get module import errors, ensure all dependencies are installed:
-
-```bash
-pip install -r requirements.txt
-```
-
-### Configuration Errors
-
-Validate your YAML configuration syntax:
-
-```bash
-python -c "import yaml; yaml.safe_load(open('config.yaml'))"
-```
+1. [E2E Demo Guide](e2e-demo.md) — P6 thesis defense script (happy path + resilience)
+2. [Architecture summary](architecture.md) — layers, packages, storage model
+2. [Pipeline Framework](pipeline-framework.md) — advisor research model → code mapping
+3. [IT Project Proposal](IT_PROJECT_PROPOSAL.md) — thesis defense depth
+4. [Best Practices](best-practices.md) — lab safety and operator discipline

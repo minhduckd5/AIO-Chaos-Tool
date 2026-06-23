@@ -60,12 +60,15 @@ class TestBuildProvider:
         with patch("chaosgen.advisor.llm_advisor.get_key", return_value="sk-test"):
             with patch(
                 "chaosgen.advisor.llm_advisor.load_secrets",
-                return_value={"OPENAI_BASE_URL": "http://100.99.206.5:20128/v1"},
+                return_value={"OPENAI_BASE_URL": "http://127.0.0.1:1/v1"},
             ):
-                with patch("chaosgen.advisor.llm_advisor._tcp_probe_base_url", return_value=(False, "TCP failed")):
+                with patch(
+                    "chaosgen.advisor.llm_advisor._tcp_probe_base_url",
+                    return_value=(False, "TCP failed"),
+                ):
                     with patch("openai.OpenAI"):
                         with patch("instructor.from_openai", return_value=MagicMock()):
-                            provider = OpenAIProvider(model="gh/claude-opus-4.5")
+                            provider = OpenAIProvider(model="test-model")
 
         ok, msg = provider.probe()
         assert ok is False

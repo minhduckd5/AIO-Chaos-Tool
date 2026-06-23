@@ -221,8 +221,9 @@ history.db-wal
 history.db-shm
 last_report.json
 promoted_scenarios.json
-**/advisor_report.json
-report.json
+demo-report.json
+demo-report-resilience.json
+**/demo-report*.json
 .chaosgen/
 settings.local.yaml
 *.local.yaml

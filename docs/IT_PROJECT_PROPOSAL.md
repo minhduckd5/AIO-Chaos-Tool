@@ -775,11 +775,11 @@ Giai đoạn **G6: Hardening & Báo cáo** — tick khi hoàn tất từng hạn
 
 | # | Tiêu chí | Deliverable / lệnh kiểm tra | Trạng thái |
 |---|----------|----------------------------|------------|
-| G6.1 | Unit & integration tests | `pytest tests/ --cov=chaosgen --cov-fail-under=70` | [ ] |
-| G6.2 | Demo E2E | `discover` → `generate` (gatekeeper) → HITL `run` → `evaluate` — xem [P6 plan](../.cursor/plans/P6-e2e-demo-dod.md) | [ ] |
+| G6.1 | Unit & integration tests | `pytest tests/ --cov=chaosgen --cov-fail-under=70` | [x] |
+| G6.2 | Demo E2E | `examples/demo-e2e.sh` — analyze/generate → incidents `--from-report` → HITL → promote → evaluate — [docs/e2e-demo.md](e2e-demo.md) | [x] |
 | G6.3 | Tài liệu kiến trúc | [docs/IT_PROJECT_PROPOSAL.md](IT_PROJECT_PROPOSAL.md) (file này) + [docs/pipeline-framework.md](pipeline-framework.md) (Figures 1–2; advisor scan local/gitignored) | [x] docs framework |
-| G6.4 | Load test | Ít nhất 1 kịch bản network latency trên staging/kind | [ ] |
-| G6.5 | Demo artifacts | Screenshot GUI + CLI; video demo (tùy chọn) | [ ] |
+| G6.4 | Load test | Network latency (`upstream-timeout-cascade`) — [docs/load-test-report.md](load-test-report.md) | [x] template + procedure |
+| G6.5 | Demo artifacts | [docs/e2e-demo.md](e2e-demo.md) + screenshot checklist; video optional | [x] script + guide |
 
 **Ghi chú G6.3:** Pipeline framework (Figure 1/2), module mapping, và advisor source
 diagram đã có trong `docs/pipeline-framework.md`. Cập nhật Figure 2 (dashed → solid)

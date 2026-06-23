@@ -1,102 +1,113 @@
-# AIO Chaos Tool Architecture
+# ChaosGen Architecture (Summary)
 
-## Overview
+> **Thesis prototype** — see [Pipeline Framework](pipeline-framework.md) for the advisor
+> research model and [IT Project Proposal](IT_PROJECT_PROPOSAL.md) for full technical depth.
 
-ChaosGen is a **microservices-focused** AI-driven chaos engineering control plane.
-Hybrid environment discovery is temporarily scoped off; the pipeline uses a static
-microservices profile while core ingestion → anomaly → scenario → HITL → execution
-logic is refined.
+ChaosGen is a **pipeline-oriented Python monolith** (`chaosgen` package): CLI + PySide6 GUI
+over a shared advisor orchestrator, HITL execution, and six chaos-tool adapters. Hybrid
+architecture auto-discovery is **deferred**; the active profile is **microservices**.
 
-See **[Pipeline Framework](pipeline-framework.md)** for the advisor research model
-and module mapping.
-
-## Current Scope
+## Current scope
 
 | Component | Status |
 |-----------|--------|
-| Telemetry ingestion (Prometheus + Loki) | Active |
-| Anomaly detection (IsolationForest + KMeans) | Active |
-| Microservices context (`config/scope.py`) | Active |
-| Scenario catalog + LLM advisor | Active |
-| HITL orchestrator + 6 chaos adapters | Active |
-| Hybrid discovery auto-probe | **Disabled** (`DISCOVERY_ENABLED = False`) |
-| Gatekeeper `?? real ??` | Planned |
-| Unknown → Known promotion loop | Planned |
+| Telemetry ingestion (Prometheus + Loki) | **Active** |
+| Anomaly detection (IsolationForest + KMeans) | **Active** |
+| Incident gatekeeper (`?? real ??`) | **Active** (P1) |
+| Unknown → describe → known promote loop | **Active** (P2–P3) |
+| Shared `run_advisor_pipeline()` (CLI + GUI) | **Active** (P4) |
+| SQLite analytics history (`history.db`) | **Active** (P5) |
+| HITL orchestrator + 6 chaos adapters + UCAL | **Active** |
+| Hybrid discovery auto-probe | **Deferred** (`DISCOVERY_ENABLED = False`) |
 
-## Component Architecture
+## Layered view
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│              CLI / PySide6 GUI                           │
-└───────────────────┬─────────────────────────────────────┘
-                    │
-                    ▼
+│  CLI (click)  ·  PySide6 GUI                           │
+└──────────────────────────┬──────────────────────────────┘
+                           │
+                           ▼
 ┌─────────────────────────────────────────────────────────┐
-│  resolve_discovery_report()  →  microservices profile    │
-│  (scope.py when discovery off)                           │
-└───────────────────┬─────────────────────────────────────┘
-                    │
-       ┌────────────┼────────────┐
-       ▼            ▼            ▼
-┌──────────┐  ┌──────────┐  ┌──────────────┐
-│ Ingestion│  │ ML Pipe  │  │ Advisor      │
-│ Collector│  │ Anomaly  │  │ Catalog+LLM  │
-└────┬─────┘  └────┬─────┘  └──────┬───────┘
-     │             │                │
-     └─────────────┴────────────────┘
-                    │
-                    ▼
+│  run_advisor_pipeline()  —  single orchestrator (P4)     │
+│  gatekeeper → describe → filter → interpret → generate   │
+└──────────────────────────┬──────────────────────────────┘
+                           │
+       ┌───────────────────┼───────────────────┐
+       ▼                   ▼                   ▼
+┌─────────────┐   ┌─────────────┐   ┌──────────────────┐
+│ ingestion/  │   │ ml/         │   │ advisor/         │
+│ Prometheus  │   │ anomalies   │   │ LLM, catalog,    │
+│ + Loki      │   │ + gatekeeper│   │ ranker, promoter │
+└─────────────┘   └─────────────┘   └──────────────────┘
+                           │
+                           ▼
 ┌─────────────────────────────────────────────────────────┐
 │  ScenarioRanker → HITL → UCAL → ChaosOrchestrator        │
-│  + BlastRadiusController + DeadMansSwitch                │
-└───────────────────┬─────────────────────────────────────┘
-                    ▼
+│  + safety/ (blast radius, dead man's switch)             │
+└──────────────────────────┬──────────────────────────────┘
+                           ▼
 ┌─────────────────────────────────────────────────────────┐
-│  Chaos Modules (Toolkit, Pumba, Toxiproxy, Kube-Monkey…)   │
+│  modules/ — Chaos Toolkit, Pumba, Toxiproxy, … (×6)      │
 └─────────────────────────────────────────────────────────┘
 ```
 
-## Core Packages
+## Advisor data flow (active path)
+
+```
+Prometheus / Loki
+  → TelemetryCollector → FeatureEngineer → AnomalyDetector (clusters)
+  → IncidentGatekeeper (REAL / CHRONIC only downstream)
+  → ScenarioDescriber (DESCRIBED; fallbacks blocked at step 4.5)
+  → LLMAdvisor → ScenarioGenerator
+  → ScenarioRanker → HITL approve
+  → UCAL → Orchestrator → chaos modules
+  → Evaluation (KPI / A/B)
+```
+
+Optional persistence after analysis (P5): `history.db` (analytics) plus
+`last_report.json` (CLI/GUI handoff). Runtime catalog SOT: `promoted_scenarios.json`.
+
+## Core packages
 
 | Package | Role |
 |---------|------|
-| `config/scope.py` | Scope guard — microservices focus, discovery toggle |
-| `ingestion/` | Prometheus + Loki clients, telemetry collector |
-| `ml/` | Feature engineering, IsolationForest anomaly detection |
-| `advisor/` | Context builder, LLM advisor, catalog, ranker, generator |
-| `orchestrator.py` | State machine + HITL approval gate |
-| `modules/` | Chaos tool adapters (6 tools) |
-| `safety/` | Blast radius governance, dead man's switch |
-| `evaluation/` | KPI tracker, A/B comparator |
-| `discovery/` | Hybrid probes (retained, not active in current scope) |
+| `advisor/pipeline.py` | Shared orchestrator — gatekeeper through scenario gen |
+| `ml/gatekeeper.py` | Frequency × severity verdict matrix |
+| `advisor/scenario_describer.py` | Structured describe for unknown incidents |
+| `advisor/catalog_promoter.py` | HITL promote into known catalog |
+| `storage/history.py` | SQLite cross-run analytics (not runtime SOT) |
+| `config/` | `settings.yaml`, XDG paths, `.env` secret refs |
+| `ingestion/` | Prometheus + Loki clients |
+| `orchestrator.py` | State machine + HITL gate |
+| `modules/` + `ucal/` | Six chaos tools behind one abstraction |
+| `discovery/` | Retained code; not on the active runtime path |
 
-## Data Flow (Microservices Focus)
+## Storage model (golden rule)
 
-```
-Prometheus/Loki
-    → TelemetryCollector
-    → FeatureEngineer
-    → AnomalyDetector
-    → [Gatekeeper — planned]
-    → ContextBuilder (microservices profile)
-    → LLMAdvisor / ScenarioCatalog
-    → ScenarioRanker
-    → HITL
-    → UCAL → Orchestrator → Chaos Modules
-    → Evaluation (KPI / A/B)
-```
+| Artifact | Role |
+|----------|------|
+| `settings.yaml` | Operator hints (URLs, gatekeeper thresholds); secret **refs** only |
+| `.env` in config dir | API keys and tokens (never in git) |
+| `last_report.json` | Latest advisor snapshot for `incidents` / `promote` |
+| `promoted_scenarios.json` | HITL-approved known catalog (P3) |
+| `history.db` | Append-only analytics — chronic patterns, ranker recency |
 
-## Re-enabling Discovery
-
-When multi-architecture support is ready:
+## Re-enabling discovery (future)
 
 1. Set `DISCOVERY_ENABLED = True` in `chaosgen/config/scope.py`
-2. Restore Discovery nav item in GUI (automatic when flag is true)
+2. Restore Discovery in the GUI (wired to the same flag)
 3. Extend catalog and advisor prompts per architecture type
 
-## Design Principles
+## Design principles
 
-1. **Modularity** — Each chaos tool behind `BaseChaosModule`
-2. **Human-in-the-loop** — No autonomous production chaos execution
-3. **Scope discipline** — Ship microservices pipeline before expanding architecture coverage
-4. **Off-the-shelf ML** — sklearn + LLM providers, no custom RAG/ML from scratch
+1. **One orchestrator** — CLI, GUI, and tests call `run_advisor_pipeline()`
+2. **Human-in-the-loop** — no autonomous production chaos execution
+3. **Scope discipline** — stabilize Unknown→Known on microservices before multi-arch
+4. **JSON runtime SOT, SQLite analytics** — avoid dual-writer confusion (P5)
+
+## Further reading
+
+- [Pipeline Framework](pipeline-framework.md) — Figures 1–2, module mapping, implementation status
+- [Getting Started](getting-started.md) — install and first advisor-loop run
+- [Best Practices](best-practices.md) — thesis-lab safety and operator notes

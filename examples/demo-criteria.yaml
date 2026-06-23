@@ -1,0 +1,4 @@
+# P6 E2E demo — promote acceptance criteria (CatalogPromoter / HITL guards)
+# Override http_health with a real lab URL before thesis defense recording.
+
+http_health: http://localhost/health

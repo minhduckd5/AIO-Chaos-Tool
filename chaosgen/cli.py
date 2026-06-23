@@ -555,6 +555,8 @@ def generate(provider, model, arch, top_n, from_catalog, output, skip_gatekeeper
         experiments = advisor_report.generated_experiments
         sources = {exp.name: "llm" for exp in experiments}
 
+    from chaosgen.storage.history import get_default_history_store
+
     ranker = ScenarioRanker(history_store=get_default_history_store(settings))
     ranked = ranker.rank(experiments, sources=sources, top_n=top_n)
 

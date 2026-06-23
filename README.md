@@ -238,8 +238,12 @@ docker compose --profile dev run --rm chaosgen_dev pytest -q
 
 ## Documentation
 
-- **[Pipeline Framework](docs/pipeline-framework.md)** — Advisor research model mapped to ChaosGen modules (microservices focus).
-- **[IT Project Proposal](docs/IT_PROJECT_PROPOSAL.md)** — Technical architecture, data flows, API contracts, DevOps, security matrix, roadmap, and risk analysis (for thesis defense / technical review).
+- **[Getting Started](docs/getting-started.md)** — Install, config paths, advisor-loop commands.
+- **[E2E Demo Guide](docs/e2e-demo.md)** — P6 thesis defense script (happy path + resilience beat).
+- **[Architecture](docs/architecture.md)** — Layers, packages, storage model (short summary).
+- **[Pipeline Framework](docs/pipeline-framework.md)** — Advisor research model mapped to ChaosGen modules.
+- **[Best Practices](docs/best-practices.md)** — Thesis-lab safety and gatekeeper interpretation.
+- **[IT Project Proposal](docs/IT_PROJECT_PROPOSAL.md)** — Full technical proposal for thesis defense / review.
 
 ## License
 
