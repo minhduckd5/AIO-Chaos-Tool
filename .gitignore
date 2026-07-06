@@ -212,6 +212,9 @@ __marimo__/
 .expermients/
 .experiments/
 
+# Copilot instructions
+.github/copilot-instructions.md
+
 # Thesis-only local assets (advisor hand-drawn sketch — not for the public repo)
 docs/assets/advisor-workflow.png
 
@@ -227,3 +230,6 @@ demo-report-resilience.json
 .chaosgen/
 settings.local.yaml
 *.local.yaml
+
+# Local draft documents
+docs/drafts/
