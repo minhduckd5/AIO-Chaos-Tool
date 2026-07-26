@@ -16,8 +16,6 @@ from qfluentwidgets import (
     NavigationInterface, NavigationItemPosition, NavigationWidget,
     FluentIcon, Theme, setTheme, setThemeColor, isDarkTheme,
 )
-from qframelesswindow import FramelessWindow
-
 from chaosgen.gui.controller import AppController
 from chaosgen.gui.theme import Colors, Fonts, Spacing, build_global_stylesheet
 from chaosgen.gui.widgets.log_console import LogConsole
@@ -44,8 +42,8 @@ _PAGE_CATALOG = 6
 _PAGE_SETTINGS = 7
 
 
-class MainWindow(FramelessWindow):
-    """ChaosGen frameless window with sidebar navigation."""
+class MainWindow(QWidget):
+    """ChaosGen window with sidebar navigation."""
 
     def __init__(self):
         super().__init__()
@@ -142,7 +140,7 @@ class MainWindow(FramelessWindow):
         self.setStyleSheet(build_global_stylesheet())
 
     def _build_title_bar(self) -> QWidget:
-        bar = _DraggableTitleBar(self)
+        bar = QWidget()
         bar.setObjectName("breadcrumbBar")
         bar.setFixedHeight(36)
         layout = QHBoxLayout(bar)
@@ -154,27 +152,7 @@ class MainWindow(FramelessWindow):
         )
         layout.addWidget(self._page_title)
         layout.addStretch()
-
-        # Window controls (minimize, maximize, close) for frameless
-        for text, slot in [("—", self.showMinimized), ("□", self._toggle_max), ("✕", self.close)]:
-            btn = QLabel(text)
-            btn.setObjectName("windowControl")
-            btn.setFixedSize(36, 36)
-            btn.setAlignment(Qt.AlignCenter)
-            btn.setStyleSheet(
-                f"QLabel {{ color: {Colors.TEXT_SECONDARY}; font-size: 14px; }}"
-                f"QLabel:hover {{ color: {Colors.TEXT_PRIMARY}; background-color: {Colors.BG_HOVER}; }}"
-            )
-            btn.mousePressEvent = lambda _, s=slot: s()
-            layout.addWidget(btn)
-
         return bar
-
-    def _toggle_max(self):
-        if self.isMaximized():
-            self.showNormal()
-        else:
-            self.showMaximized()
 
     def _build_status_bar(self) -> QWidget:
         bar = QWidget()
@@ -321,49 +299,6 @@ def run_gui():
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
-
-
-class _DraggableTitleBar(QWidget):
-    """
-    Draggable title bar region for FramelessWindow.
-
-    We intentionally implement manual dragging rather than using qframelesswindow.TitleBar,
-    because this title bar is laid out inside the main UI (to the right of the nav rail).
-    """
-
-    def __init__(self, window: FramelessWindow):
-        super().__init__(window)
-        self._window = window
-        self._dragging = False
-        self._drag_offset = None
-
-    def mousePressEvent(self, event):
-        if event.button() != Qt.LeftButton:
-            return super().mousePressEvent(event)
-
-        child = self.childAt(event.pos())
-        if isinstance(child, QWidget) and child.objectName() == "windowControl":
-            return super().mousePressEvent(event)
-
-        # Start dragging
-        self._dragging = True
-        self._drag_offset = event.globalPosition().toPoint() - self._window.frameGeometry().topLeft()
-        event.accept()
-
-    def mouseMoveEvent(self, event):
-        if not self._dragging or self._drag_offset is None:
-            return super().mouseMoveEvent(event)
-
-        if event.buttons() & Qt.LeftButton:
-            self._window.move(event.globalPosition().toPoint() - self._drag_offset)
-            event.accept()
-        else:
-            super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        self._dragging = False
-        self._drag_offset = None
-        return super().mouseReleaseEvent(event)
 
 
 if __name__ == "__main__":

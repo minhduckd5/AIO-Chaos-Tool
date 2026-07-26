@@ -21,7 +21,7 @@ GOLDEN_SIGNAL_QUERIES: Dict[str, str] = {
     "network_tx_bytes": 'sum(rate(container_network_transmit_bytes_total[5m])) by (pod)',
 }
 
-# When golden signals return nothing (OTel-only or no app scrape), use infra/OTel baselines.
+# When golden signals return nothing (e.g. no app scrape targets), use infra fallback baselines.
 FALLBACK_INFRA_QUERIES: Dict[str, str] = {
     "up": "up",
     "node_cpu": 'rate(node_cpu_seconds_total{mode!="idle"}[5m])',
@@ -112,7 +112,7 @@ class PrometheusClient:
     def query_fallback_infra(
         self, start: float, end: float, step: str = "60s"
     ) -> List[TimeSeries]:
-        """Infra / OTel metrics when classic microservice golden signals are absent."""
+        """Infra fallback metrics when classic microservice golden signals are absent."""
         all_series: List[TimeSeries] = []
         for signal_name, promql in FALLBACK_INFRA_QUERIES.items():
             series = self.query_range(promql, start, end, step)

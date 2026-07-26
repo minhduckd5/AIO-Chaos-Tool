@@ -27,3 +27,39 @@ class TestCliEvaluateAndStatus:
         )
         assert result.exit_code == 0
         assert "upstream" in result.output.lower() or "scenario" in result.output.lower()
+
+    def test_train_model_help(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["train-model", "--help"])
+        assert result.exit_code == 0
+        assert "train-model" in result.output.lower() or "serialize" in result.output.lower()
+
+    def test_train_model_command_runs(self):
+        from unittest.mock import MagicMock, patch
+        runner = CliRunner()
+        
+        with patch("chaosgen.ingestion.export_loader.ExportLoader.resolve_bundle") as mock_resolve, \
+             patch("chaosgen.ml.feature_engineering.FeatureEngineer.transform") as mock_transform, \
+             patch("chaosgen.ml.anomaly_detector.AnomalyDetector.fit") as mock_fit, \
+             patch("chaosgen.ml.anomaly_detector.AnomalyDetector.detect") as mock_detect, \
+             patch("chaosgen.ml.anomaly_detector.AnomalyDetector.save_model") as mock_save:
+             
+             mock_dataset = MagicMock()
+             mock_dataset.metrics = [1]
+             mock_dataset.total_samples = 100
+             mock_dataset.logs = [1]
+             
+             mock_loader = MagicMock()
+             mock_loader.load.return_value = mock_dataset
+             mock_resolve.return_value = mock_loader
+             
+             import pandas as pd
+             mock_df = pd.DataFrame({"f1": [1, 2]})
+             mock_transform.return_value = mock_df
+             
+             result = runner.invoke(main, ["train-model", "--export", ".", "--output-model", "test_model.joblib"])
+             
+             assert result.exit_code == 0
+             assert "Model training and serialization completed successfully." in result.output
+             assert mock_fit.called
+             assert mock_save.called

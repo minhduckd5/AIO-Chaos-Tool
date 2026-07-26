@@ -13,6 +13,7 @@ import stat
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFormLayout,
     QGroupBox,
@@ -107,6 +108,13 @@ class SettingsView(QWidget):
         hints_form.addRow("Environment:", self._env_combo)
 
         root.addWidget(hints_group)
+
+        # --- Developer Settings ---
+        dev_group = QGroupBox("Developer Options")
+        dev_form = QFormLayout(dev_group)
+        self._developer_mode_cb = QCheckBox("Enable Advanced/Developer Tuning Mode")
+        dev_form.addRow(self._developer_mode_cb)
+        root.addWidget(dev_group)
 
         # --- Local Ollama ---
         ollama_group = QGroupBox("Local Ollama (default - no API key required)")
@@ -261,6 +269,7 @@ class SettingsView(QWidget):
                 idx = self._env_combo.findData(settings.hints.environment.value)
                 if idx >= 0:
                     self._env_combo.setCurrentIndex(idx)
+            self._developer_mode_cb.setChecked(settings.developer_mode)
 
         except Exception as exc:
             logger.warning("Could not load settings: %s", exc)
@@ -335,6 +344,7 @@ class SettingsView(QWidget):
                     tool=ObservabilityTool.LOKI, url=loki_url, auth=AuthConfig(),
                 ))
             settings.hints.observability = obs
+            settings.developer_mode = self._developer_mode_cb.isChecked()
             save_settings(settings)
 
             stored = self._sync_secret_fields_from_disk()

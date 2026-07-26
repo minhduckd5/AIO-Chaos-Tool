@@ -62,10 +62,33 @@ class ScenarioRanker:
         kpi_tracker: "KPITracker | None" = None,
         blast_radius_controller: "BlastRadiusController | None" = None,
         history_store: "HistoryStore | None" = None,
+        settings: "RankingSettings | None" = None,
     ) -> None:
         self._kpi = kpi_tracker
         self._blast = blast_radius_controller
         self._history = history_store
+
+        if settings is not None:
+            raw_w = [
+                float(getattr(settings, "weight_confidence", 0.35)),
+                float(getattr(settings, "weight_historical", 0.25)),
+                float(getattr(settings, "weight_coverage", 0.20)),
+                float(getattr(settings, "weight_safety", 0.20)),
+            ]
+        else:
+            raw_w = [_W_CONFIDENCE, _W_HISTORICAL, _W_COVERAGE, _W_SAFETY]
+
+        total_w = sum(raw_w)
+        if total_w > 0:
+            self._w_confidence = raw_w[0] / total_w
+            self._w_historical = raw_w[1] / total_w
+            self._w_coverage = raw_w[2] / total_w
+            self._w_safety = raw_w[3] / total_w
+        else:
+            self._w_confidence = 0.35
+            self._w_historical = 0.25
+            self._w_coverage = 0.20
+            self._w_safety = 0.20
 
     # ------------------------------------------------------------------
     # Public API
@@ -129,10 +152,10 @@ class ScenarioRanker:
         safety_score = self._compute_safety_margin(experiment)
 
         total = (
-            confidence_score  * _W_CONFIDENCE
-            + historical_score * _W_HISTORICAL
-            + coverage_score   * _W_COVERAGE
-            + safety_score     * _W_SAFETY
+            confidence_score  * self._w_confidence
+            + historical_score * self._w_historical
+            + coverage_score   * self._w_coverage
+            + safety_score     * self._w_safety
         )
 
         reasons: list[str] = []

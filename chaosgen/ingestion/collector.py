@@ -65,6 +65,49 @@ class TelemetryCollector:
         )
         return dataset
 
+    def collect_range(
+        self,
+        start: datetime,
+        end: datetime,
+        step: str = "60s",
+        custom_queries: Optional[Dict[str, str]] = None,
+    ) -> TelemetryDataset:
+        """
+        Collect a telemetry dataset spanning from absolute datetime *start* to *end* (UTC).
+        """
+        if end <= start:
+            raise ValueError(f"Collection end time ({end}) must be strictly after start time ({start}).")
+
+        start_ts = start.timestamp()
+        end_ts = end.timestamp()
+
+        logger.info(
+            "Collecting range: %s -> %s (%.2f hours)",
+            start.isoformat(),
+            end.isoformat(),
+            (end_ts - start_ts) / 3600.0,
+        )
+
+        metrics = self._collect_metrics(start_ts, end_ts, step, custom_queries)
+        logs = self._collect_logs(start_ts, end_ts)
+
+        start_utc = start if start.tzinfo else start.replace(tzinfo=timezone.utc)
+        end_utc = end if end.tzinfo else end.replace(tzinfo=timezone.utc)
+
+        dataset = TelemetryDataset(
+            metrics=metrics,
+            logs=logs,
+            collection_start=start_utc,
+            collection_end=end_utc,
+        )
+        logger.info(
+            "Range collected: %d series, %d total samples, %d log streams",
+            len(dataset.metrics),
+            dataset.total_samples,
+            len(dataset.logs),
+        )
+        return dataset
+
     def collect_current_snapshot(self) -> TelemetrySnapshot:
         """Lightweight point-in-time snapshot for live monitoring."""
         from chaosgen.ingestion.prometheus_client import GOLDEN_SIGNAL_QUERIES
@@ -92,7 +135,7 @@ class TelemetryCollector:
         if not all_series:
             logger.warning(
                 "Golden-signal PromQL returned 0 series (http_requests_total / container_* "
-                "may not exist on this Prometheus). Falling back to infra/OTel metrics."
+                "may not exist on this Prometheus). Falling back to infra fallback metrics."
             )
             all_series = self.prometheus.query_fallback_infra(start, end, step)
 

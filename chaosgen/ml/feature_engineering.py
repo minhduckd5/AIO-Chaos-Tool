@@ -1,6 +1,6 @@
 import logging
 from collections import Counter
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -19,7 +19,13 @@ class FeatureEngineer:
               z-score filtering -> merged feature DataFrame.
     """
 
-    def __init__(self, window_size: int = 300, step: int = 60, zscore_threshold: float = 3.0):
+    def __init__(
+        self,
+        window_size: int = 300,
+        step: int = 60,
+        zscore_threshold: float = 3.0,
+        settings: Optional[Any] = None,
+    ):
         """
         Args:
             window_size: Aggregation window in seconds.
@@ -27,9 +33,14 @@ class FeatureEngineer:
             zscore_threshold: Outlier removal threshold applied per-feature
                               before ML training (sensor-level noise removal).
         """
-        self.window_size = window_size
-        self.step = step
-        self.zscore_threshold = zscore_threshold
+        if settings is not None:
+            self.window_size = getattr(settings, "rolling_window_seconds", window_size)
+            self.step = getattr(settings, "resample_step_seconds", step)
+            self.zscore_threshold = getattr(settings, "zscore_threshold", zscore_threshold)
+        else:
+            self.window_size = window_size
+            self.step = step
+            self.zscore_threshold = zscore_threshold
 
     def transform(self, dataset: TelemetryDataset) -> pd.DataFrame:
         """Convert a full TelemetryDataset into a feature matrix."""

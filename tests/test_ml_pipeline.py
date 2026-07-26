@@ -1,4 +1,5 @@
 """Tests for the ML pipeline: FeatureEngineer and AnomalyDetector."""
+import os
 import pytest
 import numpy as np
 import pandas as pd
@@ -149,3 +150,109 @@ class TestAnomalyDetector:
         detector.fit(data)
         clusters = detector.detect(data)
         assert isinstance(clusters, list)
+
+    def test_kmeans_inference_predict(self, tmp_path):
+        dataset = _make_dataset(n_samples=200, anomaly_fraction=0.15)
+        fe = FeatureEngineer(window_size=300, step=60)
+        features = fe.transform(dataset)
+
+        detector = AnomalyDetector(n_clusters=3)
+        detector.fit(features)
+        detector.detect(features)
+
+        model_path = str(tmp_path / "model.joblib")
+        detector.save_model(model_path)
+
+        new_detector = AnomalyDetector()
+        new_detector.load_model(model_path)
+
+        from unittest.mock import MagicMock
+        original_predict = new_detector.kmeans.predict
+        new_detector.kmeans.predict = MagicMock(side_effect=original_predict)
+
+        clusters = new_detector.detect(features)
+        assert isinstance(clusters, list)
+        assert new_detector.kmeans.predict.called
+
+    def test_kmeans_feature_dimension_mismatch(self, tmp_path):
+        dataset = _make_dataset(n_samples=200, anomaly_fraction=0.15)
+        fe = FeatureEngineer(window_size=300, step=60)
+        features = fe.transform(dataset)
+
+        detector = AnomalyDetector(n_clusters=3)
+        detector.fit(features)
+        detector.detect(features)
+
+        model_path = str(tmp_path / "model.joblib")
+        detector.save_model(model_path)
+
+        new_detector = AnomalyDetector()
+        new_detector.load_model(model_path)
+
+        mismatched_features = features.iloc[:, :1]
+        clusters = new_detector.detect(mismatched_features)
+        assert isinstance(clusters, list)
+
+    def test_plot_timeline_generates_file(self, tmp_path):
+        dataset = _make_dataset(n_samples=200, anomaly_fraction=0.15)
+        fe = FeatureEngineer(window_size=300, step=60)
+        features = fe.transform(dataset)
+
+        detector = AnomalyDetector(n_clusters=3)
+        detector.fit(features)
+        detector.detect(features)
+
+        plot_path = str(tmp_path / "plot.png")
+        detector.plot_timeline(features, plot_path)
+
+        assert os.path.exists(plot_path)
+        assert os.path.getsize(plot_path) > 0
+
+
+class TestWindowResolver:
+    def test_relative_hours(self):
+        from chaosgen.ingestion.window import resolve_collection_window
+        window = resolve_collection_window(hours=12)
+        assert 11.9 <= window.lookback_hours <= 12.1
+
+    def test_absolute_range(self):
+        from chaosgen.ingestion.window import resolve_collection_window
+        start = datetime(2026, 7, 20, 10, 0, 0, tzinfo=timezone.utc)
+        end = datetime(2026, 7, 20, 16, 0, 0, tzinfo=timezone.utc)
+        window = resolve_collection_window(start=start, end=end)
+        assert window.lookback_hours == 6.0
+        assert window.start == start
+        assert window.end == end
+
+    def test_dataset_window(self):
+        from chaosgen.ingestion.window import resolve_collection_window
+        dataset = _make_dataset()
+        window = resolve_collection_window(dataset=dataset)
+        assert window.start == dataset.collection_start
+        assert window.end == dataset.collection_end
+
+
+class TestAutoKSilhouette:
+    def test_auto_k_selection(self):
+        from chaosgen.config.settings import AnomalySettings
+        settings = AnomalySettings(clustering_mode="auto", min_clusters=2, max_clusters=5)
+        detector = AnomalyDetector(settings=settings)
+        dataset = _make_dataset(n_samples=300, anomaly_fraction=0.2)
+        fe = FeatureEngineer(window_size=300, step=60)
+        features = fe.transform(dataset)
+        detector.fit(features)
+        clusters = detector.detect(features)
+        assert isinstance(clusters, list)
+        assert len(clusters) >= 1
+
+    def test_fixed_k_mode(self):
+        from chaosgen.config.settings import AnomalySettings
+        settings = AnomalySettings(clustering_mode="fixed", n_clusters=4)
+        detector = AnomalyDetector(settings=settings)
+        dataset = _make_dataset(n_samples=300, anomaly_fraction=0.2)
+        fe = FeatureEngineer(window_size=300, step=60)
+        features = fe.transform(dataset)
+        detector.fit(features)
+        clusters = detector.detect(features)
+        assert isinstance(clusters, list)
+        assert len(clusters) <= 4

@@ -129,6 +129,34 @@ chaosgen evaluate
 chaosgen evaluate --ab
 ```
 
+## Model Training & Inference (Centroid Stabilization)
+
+By default, `analyze` and `generate` train the `IsolationForest` and `KMeans` models dynamically "on-the-fly" on your lookback window. For consistent and precise anomaly detection (ensuring cluster IDs do not drift between runs), you can split training and inference:
+
+### 1. Train and save model (Dev Mode)
+
+Train the models on a curated baseline telemetry export bundle or live stack, and save the serialized joblib state:
+
+```bash
+# Option A: Train on offline export dataset (Recommended)
+chaosgen train-model --export /path/to/baseline-export --output-model ./models/baseline_model.joblib
+
+# Option B: Train on live telemetry stack
+chaosgen train-model --live --hours 24 --output-model ./models/baseline_model.joblib
+```
+
+### 2. Run Inference using the pre-trained model (Client Mode)
+
+Load the pre-trained centroids for anomaly classification to ensure consistent cluster IDs:
+
+```bash
+# Analyze telemetry in inference mode
+chaosgen analyze --export /path/to/new-export --model-path ./models/baseline_model.joblib
+
+# Generate chaos experiments using the pre-trained model
+chaosgen generate --model-path ./models/baseline_model.joblib
+```
+
 ## GUI equivalent
 
 Open the **Advisor** view: run analysis, review **Gatekeeper** / **Descriptions** tabs,

@@ -168,7 +168,15 @@ def discover(config_path, arch, env_type, output):
     "--check", is_flag=True, default=False,
     help="Only verify live Prometheus/Loki connectivity (Way 1).",
 )
-@click.option("--hours", default=24, show_default=True, help="Lookback hours for --live.")
+@click.option("--hours", default=None, type=int, help="Lookback hours for --live (default: from settings or 24).")
+@click.option(
+    "--start", type=click.DateTime(formats=["%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]), default=None,
+    help="Absolute start datetime (UTC) for live collection.",
+)
+@click.option(
+    "--end", type=click.DateTime(formats=["%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]), default=None,
+    help="Absolute end datetime (UTC) for live collection.",
+)
 @click.option(
     "--generate", "with_generate", is_flag=True, default=False,
     help="After analysis, run scenario generation (like chaosgen generate).",
@@ -176,13 +184,15 @@ def discover(config_path, arch, env_type, output):
 @click.option("--provider", type=click.Choice(["ollama", "openai", "anthropic", "groq"]), default=None)
 @click.option("--top-n", default=5, show_default=True)
 @click.option("--config", "config_path", default=None, help="Path to settings.yaml.")
-def analyze(live, export_path, check, hours, with_generate, provider, top_n, config_path):
+@click.option("--model-path", default=None, help="Path to pre-trained ML model joblib file.")
+def analyze(live, export_path, check, hours, start, end, with_generate, provider, top_n, config_path, model_path):
     """Analyze metrics/logs from live stack or offline export; optional scenario generation."""
     from chaosgen.config.settings import load_settings
     from chaosgen.config.telemetry_endpoints import resolve_loki_url, resolve_prometheus_url
     from chaosgen.ingestion.analysis import analyze_dataset
     from chaosgen.ingestion.export_loader import ExportLoader
     from chaosgen.ingestion.telemetry_factory import build_telemetry_collector, check_live_stack
+    from chaosgen.ingestion.window import resolve_collection_window
 
     settings = load_settings(config_path)
 
@@ -205,10 +215,15 @@ def analyze(live, export_path, check, hours, with_generate, provider, top_n, con
         loader = ExportLoader.resolve_bundle(export_path)
         dataset = loader.load()
         source = f"export:{loader.export_root.name}"
+        window = resolve_collection_window(dataset=dataset, settings=settings)
     else:
-        click.echo(f"[ChaosGen] Collecting live telemetry ({hours}h lookback)...")
+        window = resolve_collection_window(hours=hours, start=start, end=end, settings=settings)
+        click.echo(f"[ChaosGen] Collecting live telemetry ({window.start.isoformat()} -> {window.end.isoformat()}, {window.lookback_hours:.1f}h window)...")
         collector = build_telemetry_collector(settings)
-        dataset = collector.collect_baseline(duration_hours=hours)
+        if start and end:
+            dataset = collector.collect_range(start=window.start, end=window.end, step=settings.telemetry.step)
+        else:
+            dataset = collector.collect_baseline(duration_hours=int(round(window.lookback_hours)), step=settings.telemetry.step)
         source = "live"
 
     click.echo(
@@ -217,7 +232,7 @@ def analyze(live, export_path, check, hours, with_generate, provider, top_n, con
         f"Log streams: {len(dataset.logs)}"
     )
 
-    clusters, summaries, feature_rows = analyze_dataset(dataset)
+    clusters, summaries, feature_rows = analyze_dataset(dataset, model_path=model_path, settings=settings)
     click.secho(f"\n=== Anomaly Analysis ({source}) ===", bold=True)
     click.echo(f"  Feature windows: {feature_rows}")
     click.echo(f"  Anomaly clusters: {len(clusters)}")
@@ -239,13 +254,145 @@ def analyze(live, export_path, check, hours, with_generate, provider, top_n, con
         settings=settings,
         clusters=clusters,
         summaries=summaries,
-        lookback_hours=float(hours),
+        lookback_hours=window.lookback_hours,
         provider=provider,
         model=None,
         top_n=top_n,
         output="table",
         config_path=config_path,
     )
+
+
+# ---------------------------------------------------------------------------
+# train-model  (offline baseline model training step)
+# ---------------------------------------------------------------------------
+
+
+@main.command("train-model")
+@click.option(
+    "--export", "export_paths", default=None, multiple=True, type=click.Path(exists=True),
+    help="Path to reference telemetry export bundle folder(s). Can be specified multiple times.",
+)
+@click.option(
+    "--output-model", "output_path", default="./default_model.joblib",
+    help="Output file path for the trained model .joblib.",
+)
+@click.option(
+    "--live", is_flag=True, default=False,
+    help="Train on live Prometheus/Loki telemetry (backup/alternative).",
+)
+@click.option("--hours", default=24, show_default=True, help="Lookback hours when using --live.")
+@click.option("--config", "config_path", default=None, help="Path to settings.yaml.")
+def train_model(export_paths, output_path, live, hours, config_path):
+    """Fit IsolationForest & KMeans on reference dataset(s) and serialize the model."""
+    import pandas as pd
+    from chaosgen.config.settings import load_settings
+    from chaosgen.ingestion.export_loader import ExportLoader
+    from chaosgen.ingestion.telemetry_factory import build_telemetry_collector
+    from chaosgen.ml.feature_engineering import FeatureEngineer
+    from chaosgen.ml.anomaly_detector import AnomalyDetector
+
+    settings = load_settings(config_path)
+
+    if not export_paths and not live:
+        raise click.ClickException("Must specify at least one --export (reference dataset) or --live.")
+
+    feature_dfs = []
+    fe = FeatureEngineer()
+
+    if export_paths:
+        for path in export_paths:
+            click.echo(f"[ChaosGen] Loading offline training export: {path}")
+            loader = ExportLoader.resolve_bundle(path)
+            dataset = loader.load()
+            click.echo(
+                f"  Series: {len(dataset.metrics)} | "
+                f"Samples: {dataset.total_samples} | "
+                f"Log streams: {len(dataset.logs)}"
+            )
+            features = fe.transform(dataset)
+            if not features.empty:
+                feature_dfs.append(features)
+    else:
+        click.echo(f"[ChaosGen] Collecting live telemetry for training ({hours}h lookback)...")
+        collector = build_telemetry_collector(settings)
+        dataset = collector.collect_baseline(duration_hours=hours)
+        click.echo(
+            f"  Series: {len(dataset.metrics)} | "
+            f"Samples: {dataset.total_samples} | "
+            f"Log streams: {len(dataset.logs)}"
+        )
+        features = fe.transform(dataset)
+        if not features.empty:
+            feature_dfs.append(features)
+
+    if not feature_dfs:
+        raise click.ClickException("No feature data extracted from dataset(s); aborting training.")
+
+    combined_features = pd.concat(feature_dfs, axis=0).sort_index()
+    combined_features = combined_features[~combined_features.index.duplicated(keep="first")]
+
+    click.echo(f"[ChaosGen] Training Anomaly Detector (IsolationForest & KMeans) on {len(combined_features)} samples...")
+    detector = AnomalyDetector()
+    detector.fit(combined_features)
+
+    try:
+        detector.detect(combined_features)
+    except Exception as e:
+        click.secho(f"Warning during initial KMeans fit: {e}", fg="yellow")
+
+    click.echo(f"[ChaosGen] Saving model weights to: {output_path}")
+    detector.save_model(output_path)
+    click.secho("Model training and serialization completed successfully.", fg="green")
+
+
+@main.command("plot-anomalies")
+@click.option(
+    "--export", "export_path", required=True, type=click.Path(exists=True),
+    help="Path to a reference telemetry export bundle folder.",
+)
+@click.option(
+    "--model-path", "model_path", required=True, type=click.Path(exists=True),
+    help="Path to the pre-trained ML model joblib file.",
+)
+@click.option(
+    "--output-plot", "output_path", default="./anomaly_timeline.png",
+    help="Output file path for the generated anomaly timeline plot (e.g. .png).",
+)
+@click.option("--config", "config_path", default=None, help="Path to settings.yaml.")
+def plot_anomalies(export_path, model_path, output_path, config_path):
+    """Plot the anomaly timeline, highlighting anomaly clusters over time."""
+    from chaosgen.config.settings import load_settings
+    from chaosgen.ingestion.export_loader import ExportLoader
+    from chaosgen.ml.feature_engineering import FeatureEngineer
+    from chaosgen.ml.anomaly_detector import AnomalyDetector
+
+    settings = load_settings(config_path)
+
+    click.echo(f"[ChaosGen] Loading offline export: {export_path}")
+    loader = ExportLoader.resolve_bundle(export_path)
+    dataset = loader.load()
+
+    click.echo(
+        f"  Series: {len(dataset.metrics)} | "
+        f"Samples: {dataset.total_samples} | "
+        f"Log streams: {len(dataset.logs)}"
+    )
+
+    click.echo("[ChaosGen] Running Feature Engineering...")
+    fe = FeatureEngineer()
+    features = fe.transform(dataset)
+    if features.empty:
+        raise click.ClickException("No feature data extracted from dataset; aborting plot.")
+
+    click.echo(f"[ChaosGen] Loading pre-trained model from: {model_path}")
+    detector = AnomalyDetector()
+    detector.load_model(model_path)
+
+    click.echo(f"[ChaosGen] Generating timeline plot at: {output_path}")
+    detector.plot_timeline(features, output_path)
+    click.secho("Timeline plot generated successfully.", fg="green")
+
 
 
 def _describe_status(report, cluster_id: int) -> str:
@@ -478,7 +625,8 @@ def bootstrap(tier, namespace, output_dir):
 @click.option("--show-transient", is_flag=True, default=False, help="Show TRANSIENT rows in gatekeeper table.")
 @click.option("--save-report", "save_report_path", default=None, help="Write AdvisorReport JSON to PATH.")
 @click.option("--config", "config_path", default=None, help="Path to settings.yaml.")
-def generate(provider, model, arch, top_n, from_catalog, output, skip_gatekeeper, show_transient, save_report_path, config_path):
+@click.option("--model-path", default=None, help="Path to pre-trained ML model joblib file.")
+def generate(provider, model, arch, top_n, from_catalog, output, skip_gatekeeper, show_transient, save_report_path, config_path, model_path):
     """Generate AI chaos scenarios from anomaly data or the pre-built catalog."""
     from chaosgen.advisor.scenario_catalog import ScenarioCatalog
     from chaosgen.advisor.scenario_ranker import ScenarioRanker
@@ -530,7 +678,7 @@ def generate(provider, model, arch, top_n, from_catalog, output, skip_gatekeeper
         try:
             collector = build_telemetry_collector(settings)
             dataset = collector.collect_baseline(duration_hours=24)
-            clusters, anomaly_summaries, _ = analyze_dataset(dataset)
+            clusters, anomaly_summaries, _ = analyze_dataset(dataset, model_path=model_path)
         except Exception as exc:
             click.secho(f"  Telemetry unavailable ({exc}), cannot run pipeline.", fg="red")
             sys.exit(1)

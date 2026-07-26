@@ -7,14 +7,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Slot
-from PySide6.QtGui import QColor, QShowEvent
+from PySide6.QtGui import QColor, QShowEvent, QPixmap
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
-    QLineEdit, QSpinBox, QPushButton, QStackedWidget,
+    QLineEdit, QSpinBox, QDoubleSpinBox, QSlider, QPushButton, QStackedWidget,
     QTableWidget, QTableWidgetItem, QHeaderView, QTextEdit,
     QSplitter, QMessageBox, QFileDialog, QRadioButton,
     QButtonGroup, QCheckBox, QComboBox, QTabWidget,
-    QDialog, QDialogButtonBox, QPlainTextEdit,
+    QDialog, QDialogButtonBox, QPlainTextEdit, QScrollArea,
 )
 
 from chaosgen.config.telemetry_endpoints import DEFAULT_LOKI_URL, DEFAULT_PROMETHEUS_URL
@@ -25,6 +25,7 @@ from chaosgen.gui.advisor_presenter import (
     promote_blocked_reason,
 )
 from chaosgen.gui.analysis_pipeline import AnalysisRequest, AnalysisResult
+from chaosgen.gui.widgets.interactive_timeline import InteractiveTimelineWidget
 from chaosgen.gui.theme import Colors, Fonts, Spacing
 from chaosgen.schemas.scenarios import (
     AdvisorReport,
@@ -108,19 +109,59 @@ class AdvisorView(QWidget):
 
         self._source_stack = QStackedWidget()
 
+        from PySide6.QtCore import QDateTime
+        from PySide6.QtWidgets import QDateTimeEdit
+
         live_panel = QWidget()
         live_form = QFormLayout(live_panel)
         self._prom_url = QLineEdit(DEFAULT_PROMETHEUS_URL)
         self._loki_url = QLineEdit(DEFAULT_LOKI_URL)
+
+        time_mode_row = QHBoxLayout()
+        self._time_relative = QRadioButton("Relative (last N hours)")
+        self._time_absolute = QRadioButton("Absolute range (UTC)")
+        self._time_relative.setChecked(True)
+        self._time_group = QButtonGroup(self)
+        self._time_group.addButton(self._time_relative)
+        self._time_group.addButton(self._time_absolute)
+        time_mode_row.addWidget(self._time_relative)
+        time_mode_row.addWidget(self._time_absolute)
+        time_mode_row.addStretch()
+
         self._lookback = QSpinBox()
         self._lookback.setRange(1, 168)
         self._lookback.setValue(24)
         self._lookback.setSuffix(" h")
+
+        now_dt = QDateTime.currentDateTime()
+        self._start_dt_edit = QDateTimeEdit(now_dt.addDays(-1))
+        self._start_dt_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+        self._end_dt_edit = QDateTimeEdit(now_dt)
+        self._end_dt_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+
+        self._relative_widget = QWidget()
+        rel_l = QHBoxLayout(self._relative_widget)
+        rel_l.setContentsMargins(0, 0, 0, 0)
+        rel_l.addWidget(self._lookback)
+        rel_l.addStretch()
+
+        self._absolute_widget = QWidget()
+        abs_l = QFormLayout(self._absolute_widget)
+        abs_l.setContentsMargins(0, 0, 0, 0)
+        abs_l.addRow("Start:", self._start_dt_edit)
+        abs_l.addRow("End:", self._end_dt_edit)
+        self._absolute_widget.setVisible(False)
+
         for w in (self._prom_url, self._loki_url):
             self._style_input(w)
         live_form.addRow("Prometheus:", self._prom_url)
         live_form.addRow("Loki:", self._loki_url)
-        live_form.addRow("Lookback:", self._lookback)
+        live_form.addRow("Time Mode:", time_mode_row)
+        live_form.addRow("Lookback:", self._relative_widget)
+        live_form.addRow("Date Range:", self._absolute_widget)
+
+        self._time_relative.toggled.connect(lambda rel: self._relative_widget.setVisible(rel))
+        self._time_relative.toggled.connect(lambda rel: self._absolute_widget.setVisible(not rel))
 
         check_row = QHBoxLayout()
         self._check_btn = QPushButton("Check connection")
@@ -163,6 +204,133 @@ class AdvisorView(QWidget):
         self._style_input(self._model)
         llm_form.addRow("LLM provider:", self._provider_combo)
         llm_form.addRow("Model:", self._model)
+        self._ml_model_combo = QComboBox()
+        self._style_input(self._ml_model_combo)
+        llm_form.addRow("ML Model (optional):", self._ml_model_combo)
+
+        # Collapsible Developer/Advanced Options
+        self._dev_options_toggle = QCheckBox("Show Advanced/Developer Options")
+        self._dev_options_toggle.setChecked(False)
+        self._dev_options_toggle.setVisible(False)
+        llm_form.addRow(self._dev_options_toggle)
+
+        self._dev_options_container = QWidget()
+        self._dev_options_container.setVisible(False)
+        dev_l = QFormLayout(self._dev_options_container)
+        dev_l.setContentsMargins(0, 8, 0, 0)
+        dev_l.setSpacing(12)
+
+        # A. Cluster Mode (K)
+        k_mode_row = QHBoxLayout()
+        self._k_mode_auto = QRadioButton("Auto K (Silhouette)")
+        self._k_mode_custom = QRadioButton("Custom K:")
+        self._k_mode_auto.setChecked(True)
+        self._k_mode_group = QButtonGroup(self)
+        self._k_mode_group.addButton(self._k_mode_auto)
+        self._k_mode_group.addButton(self._k_mode_custom)
+
+        self._custom_k_spin = QSpinBox()
+        self._custom_k_spin.setRange(1, 20)
+        self._custom_k_spin.setValue(5)
+        self._custom_k_spin.setEnabled(False)
+
+        k_mode_row.addWidget(self._k_mode_auto)
+        k_mode_row.addWidget(self._k_mode_custom)
+        k_mode_row.addWidget(self._custom_k_spin)
+        k_mode_row.addStretch()
+        self._k_mode_custom.toggled.connect(lambda custom: self._custom_k_spin.setEnabled(custom))
+        dev_l.addRow("Cluster Mode (K):", k_mode_row)
+
+        # B. Feature Tuning (Z-score, Contamination, Step, Window)
+        self._zscore_spin = QDoubleSpinBox()
+        self._zscore_spin.setRange(0.5, 10.0)
+        self._zscore_spin.setSingleStep(0.1)
+        self._zscore_spin.setValue(3.0)
+        self._style_input(self._zscore_spin)
+
+        self._contamination_spin = QDoubleSpinBox()
+        self._contamination_spin.setRange(0.01, 0.49)
+        self._contamination_spin.setSingleStep(0.01)
+        self._contamination_spin.setValue(0.10)
+        self._style_input(self._contamination_spin)
+
+        self._window_spin = QSpinBox()
+        self._window_spin.setRange(10, 7200)
+        self._window_spin.setSuffix(" s")
+        self._window_spin.setValue(300)
+        self._style_input(self._window_spin)
+
+        self._step_spin = QSpinBox()
+        self._step_spin.setRange(10, 1800)
+        self._step_spin.setSuffix(" s")
+        self._step_spin.setValue(60)
+        self._style_input(self._step_spin)
+
+        dev_l.addRow("Z-Score Threshold:", self._zscore_spin)
+        dev_l.addRow("IForest Contamination:", self._contamination_spin)
+        dev_l.addRow("Rolling Window size:", self._window_spin)
+        dev_l.addRow("Resample Step size:", self._step_spin)
+
+        # C. Ranker Weights Sliders
+        self._w_conf_slider = QSlider(Qt.Horizontal)
+        self._w_conf_slider.setRange(0, 100)
+        self._w_conf_slider.setValue(35)
+        self._w_hist_slider = QSlider(Qt.Horizontal)
+        self._w_hist_slider.setRange(0, 100)
+        self._w_hist_slider.setValue(25)
+        self._w_cov_slider = QSlider(Qt.Horizontal)
+        self._w_cov_slider.setRange(0, 100)
+        self._w_cov_slider.setValue(20)
+        self._w_safe_slider = QSlider(Qt.Horizontal)
+        self._w_safe_slider.setRange(0, 100)
+        self._w_safe_slider.setValue(20)
+
+        self._w_conf_label = QLabel("Raw: 35 (35%)")
+        self._w_hist_label = QLabel("Raw: 25 (25%)")
+        self._w_cov_label = QLabel("Raw: 20 (20%)")
+        self._w_safe_label = QLabel("Raw: 20 (20%)")
+
+        for lbl in (self._w_conf_label, self._w_hist_label, self._w_cov_label, self._w_safe_label):
+            lbl.setStyleSheet(f"color: {Colors.TEXT_SECONDARY}; min-width: 90px;")
+
+        for slider in (self._w_conf_slider, self._w_hist_slider, self._w_cov_slider, self._w_safe_slider):
+            slider.valueChanged.connect(self._update_normalized_labels)
+
+        r_conf = QHBoxLayout()
+        r_conf.addWidget(self._w_conf_slider, stretch=1)
+        r_conf.addWidget(self._w_conf_label)
+        dev_l.addRow("Weight LLM Confidence:", r_conf)
+
+        r_hist = QHBoxLayout()
+        r_hist.addWidget(self._w_hist_slider, stretch=1)
+        r_hist.addWidget(self._w_hist_label)
+        dev_l.addRow("Weight Hist Recurrence:", r_hist)
+
+        r_cov = QHBoxLayout()
+        r_cov.addWidget(self._w_cov_slider, stretch=1)
+        r_cov.addWidget(self._w_cov_label)
+        dev_l.addRow("Weight Metric Coverage:", r_cov)
+
+        r_safe = QHBoxLayout()
+        r_safe.addWidget(self._w_safe_slider, stretch=1)
+        r_safe.addWidget(self._w_safe_label)
+        dev_l.addRow("Weight Blast Radius:", r_safe)
+
+        # D. Safety constraints
+        self._max_affected_nodes = QSpinBox()
+        self._max_affected_nodes.setRange(1, 100)
+        self._max_affected_nodes.setValue(2)
+        self._style_input(self._max_affected_nodes)
+
+        self._blocked_namespaces = QLineEdit("kube-system, monitoring")
+        self._style_input(self._blocked_namespaces)
+
+        dev_l.addRow("Max Affected Nodes:", self._max_affected_nodes)
+        dev_l.addRow("Blocked Namespaces:", self._blocked_namespaces)
+
+        llm_form.addRow(self._dev_options_container)
+        self._dev_options_toggle.toggled.connect(self._dev_options_container.setVisible)
+
         self._credential_status = QLabel()
         self._credential_status.setWordWrap(True)
         self._credential_status.setStyleSheet(f"color: {Colors.TEXT_SECONDARY}; font-size: {Fonts.SIZE_SMALL}px;")
@@ -186,7 +354,13 @@ class AdvisorView(QWidget):
         self._analyze_btn.clicked.connect(self._on_analyze)
         s1.addWidget(self._analyze_btn, alignment=Qt.AlignLeft)
         s1.addStretch()
-        self._stack.addWidget(step1)
+
+        # Wrap Step 1 in a scroll area to make it scrollable when advanced options expand
+        step1_scroll = QScrollArea()
+        step1_scroll.setWidgetResizable(True)
+        step1_scroll.setFrameShape(QScrollArea.NoFrame)
+        step1_scroll.setWidget(step1)
+        self._stack.addWidget(step1_scroll)
 
         # --- Step 2 ---
         step2 = QWidget()
@@ -219,6 +393,9 @@ class AdvisorView(QWidget):
         self._anomaly_table.verticalHeader().setVisible(False)
         self._style_table(self._anomaly_table)
         self._tabs.addTab(self._anomaly_table, "Anomalies")
+
+        self._timeline_widget = InteractiveTimelineWidget(self)
+        self._tabs.addTab(self._timeline_widget, "Timeline")
 
         # --- Gatekeeper tab (P1) ---
         self._gatekeeper_table = QTableWidget()
@@ -348,10 +525,53 @@ class AdvisorView(QWidget):
     def showEvent(self, event: QShowEvent):
         super().showEvent(event)
         self._refresh_credential_status()
+        self._refresh_ml_models()
+        self._refresh_developer_mode()
+
+    def _update_normalized_labels(self):
+        raw = [
+            self._w_conf_slider.value(),
+            self._w_hist_slider.value(),
+            self._w_cov_slider.value(),
+            self._w_safe_slider.value(),
+        ]
+        total = sum(raw)
+        if total > 0:
+            p_conf = int(round(100 * raw[0] / total))
+            p_hist = int(round(100 * raw[1] / total))
+            p_cov = int(round(100 * raw[2] / total))
+            p_safe = int(round(100 * raw[3] / total))
+        else:
+            p_conf, p_hist, p_cov, p_safe = 25, 25, 25, 25
+
+        self._w_conf_label.setText(f"Raw: {raw[0]} ({p_conf}%)")
+        self._w_hist_label.setText(f"Raw: {raw[1]} ({p_hist}%)")
+        self._w_cov_label.setText(f"Raw: {raw[2]} ({p_cov}%)")
+        self._w_safe_label.setText(f"Raw: {raw[3]} ({p_safe}%)")
+
+    def _refresh_developer_mode(self):
+        try:
+            from chaosgen.config.settings import load_settings
+            settings = load_settings()
+            is_dev = settings.developer_mode
+            self._dev_options_toggle.setVisible(is_dev)
+            if not is_dev:
+                self._dev_options_toggle.setChecked(False)
+                self._dev_options_container.setVisible(False)
+        except Exception:
+            pass
 
     def refresh_credentials(self):
         """Called after Settings save so credential status picks up new keys."""
         self._refresh_credential_status()
+
+    def _refresh_ml_models(self):
+        self._ml_model_combo.clear()
+        self._ml_model_combo.addItem("None (Dynamic Fit)", "")
+        models_dir = Path("./models")
+        if models_dir.exists() and models_dir.is_dir():
+            for f in sorted(models_dir.glob("*.joblib")):
+                self._ml_model_combo.addItem(f.name, str(f.resolve()))
 
     def _refresh_credential_status(self):
         from chaosgen.config.secrets import provider_credential_status
@@ -381,6 +601,32 @@ class AdvisorView(QWidget):
                     self._provider_combo.setCurrentIndex(idx)
             if settings.llm_model:
                 self._model.setText(settings.llm_model)
+
+            # Load advanced settings values
+            if settings.anomaly:
+                if settings.anomaly.clustering_mode == "fixed":
+                    self._k_mode_custom.setChecked(True)
+                else:
+                    self._k_mode_auto.setChecked(True)
+                self._custom_k_spin.setValue(settings.anomaly.n_clusters)
+                self._contamination_spin.setValue(settings.anomaly.contamination)
+
+            if settings.features:
+                self._zscore_spin.setValue(settings.features.zscore_threshold)
+                self._window_spin.setValue(settings.features.rolling_window_seconds)
+                self._step_spin.setValue(settings.features.resample_step_seconds)
+
+            if settings.ranking:
+                self._w_conf_slider.setValue(int(settings.ranking.weight_confidence * 100))
+                self._w_hist_slider.setValue(int(settings.ranking.weight_historical * 100))
+                self._w_cov_slider.setValue(int(settings.ranking.weight_coverage * 100))
+                self._w_safe_slider.setValue(int(settings.ranking.weight_safety * 100))
+                self._update_normalized_labels()
+
+            if settings.safety:
+                self._max_affected_nodes.setValue(settings.safety.max_affected_nodes)
+                self._blocked_namespaces.setText(", ".join(settings.safety.blocked_namespaces))
+
         except Exception:
             pass
         self._refresh_credential_status()
@@ -443,20 +689,67 @@ class AdvisorView(QWidget):
                 )
 
         source = "live" if self._mode_live.isChecked() else "export"
+        model_path = self._ml_model_combo.currentData() or None
+
+        start_datetime = None
+        end_datetime = None
+        if self._mode_live.isChecked() and self._time_absolute.isChecked():
+            from datetime import timezone
+            s_qdt = self._start_dt_edit.dateTime().toPython()
+            e_qdt = self._end_dt_edit.dateTime().toPython()
+            start_datetime = s_qdt.replace(tzinfo=timezone.utc)
+            end_datetime = e_qdt.replace(tzinfo=timezone.utc)
+
+        clustering_mode = "fixed" if self._k_mode_custom.isChecked() else "auto"
+        n_clusters = self._custom_k_spin.value()
+
+        # Persist advanced options to settings.yaml before running
+        try:
+            from chaosgen.config.settings import load_settings, save_settings
+            settings = load_settings()
+            settings.anomaly.clustering_mode = clustering_mode
+            settings.anomaly.n_clusters = n_clusters
+            settings.anomaly.contamination = self._contamination_spin.value()
+
+            settings.features.zscore_threshold = self._zscore_spin.value()
+            settings.features.rolling_window_seconds = self._window_spin.value()
+            settings.features.resample_step_seconds = self._step_spin.value()
+
+            settings.ranking.weight_confidence = self._w_conf_slider.value() / 100.0
+            settings.ranking.weight_historical = self._w_hist_slider.value() / 100.0
+            settings.ranking.weight_coverage = self._w_cov_slider.value() / 100.0
+            settings.ranking.weight_safety = self._w_safe_slider.value() / 100.0
+
+            settings.safety.max_affected_nodes = self._max_affected_nodes.value()
+            settings.safety.blocked_namespaces = [
+                ns.strip() for ns in self._blocked_namespaces.text().split(",") if ns.strip()
+            ]
+
+            save_settings(settings)
+        except Exception as e:
+            logger.warning("Failed to save tuning settings before analysis: %s", e)
+
         request = AnalysisRequest(
             source=source,
             prom_url=self._prom_url.text().strip(),
             loki_url=self._loki_url.text().strip(),
             lookback_hours=self._lookback.value(),
+            start_datetime=start_datetime,
+            end_datetime=end_datetime,
             export_path=self._export_path.text().strip() or None,
+            clustering_mode=clustering_mode,
+            n_clusters=n_clusters,
             generate_scenarios=self._generate_cb.isChecked(),
             llm_provider=self._provider_combo.currentText(),
             llm_model=self._model.text().strip() or None,
             skip_gatekeeper=self._skip_gatekeeper_cb.isChecked(),
+            model_path=model_path,
         )
 
         self._analyze_btn.setEnabled(False)
         self._check_btn.setEnabled(False)
+        self._dev_options_toggle.setEnabled(False)
+        self._dev_options_container.setEnabled(False)
         self._stack.setCurrentIndex(1)
         self._step_label.setText("Step 2 of 3 — Analyzing telemetry")
         self._controller.run_telemetry_analysis_async(request)
@@ -470,6 +763,8 @@ class AdvisorView(QWidget):
         self._current_report = report
         self._analyze_btn.setEnabled(True)
         self._check_btn.setEnabled(True)
+        self._dev_options_toggle.setEnabled(True)
+        self._dev_options_container.setEnabled(True)
         self._stack.setCurrentIndex(2)
         self._step_label.setText("Step 3 of 3 — Review results")
 
@@ -482,12 +777,19 @@ class AdvisorView(QWidget):
                 f"{gatekeeper_summary(report)}"
             )
             self._fill_anomaly_table(result.summaries)
+            self._timeline_widget.update_plot(
+                result.timeline_df,
+                result.summaries,
+                report.clusters
+            )
+            
             if result.metric_series == 0 or result.feature_rows == 0:
                 self._detail_text.setPlainText(self._empty_metrics_help(result))
         else:
             self._summary_label.setText(
                 f"Anomalies: {report.anomalies_found}  |  {gatekeeper_summary(report)}"
             )
+            self._timeline_widget.clear()
 
         self._fill_gatekeeper_table(report)
         self._fill_descriptions_table()
@@ -724,6 +1026,8 @@ class AdvisorView(QWidget):
     def _on_advisor_error(self, error_msg: str):
         self._analyze_btn.setEnabled(True)
         self._check_btn.setEnabled(True)
+        self._dev_options_toggle.setEnabled(True)
+        self._dev_options_container.setEnabled(True)
         self._go_step1()
         QMessageBox.critical(self, "Analysis error", error_msg)
 
@@ -789,6 +1093,7 @@ class AdvisorView(QWidget):
         self._gatekeeper_table.setRowCount(0)
         self._descriptions_table.setRowCount(0)
         self._results_table.setRowCount(0)
+        self._timeline_widget.clear()
         self._detail_text.clear()
         self._current_report = None
         self._current_result = None

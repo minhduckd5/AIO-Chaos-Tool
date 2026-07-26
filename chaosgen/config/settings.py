@@ -97,6 +97,82 @@ class GatekeeperSettings(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Telemetry settings (P7 — Telemetry Window & Auto-K Anomalies)
+# ---------------------------------------------------------------------------
+
+
+class TelemetrySettings(BaseModel):
+    """Defaults for telemetry window collection."""
+
+    default_lookback_hours: int = 24
+    step: str = "60s"
+
+
+# ---------------------------------------------------------------------------
+# Anomaly settings (P7 — Telemetry Window & Auto-K Anomalies)
+# ---------------------------------------------------------------------------
+
+
+class AnomalySettings(BaseModel):
+    """Clustering and outlier detection policy."""
+
+    clustering_mode: Literal["auto", "fixed"] = "auto"
+    n_clusters: int = Field(default=5, ge=1)
+    min_clusters: int = Field(default=2, ge=1)
+    max_clusters: int = Field(default=15, ge=1)
+    contamination: float = Field(default=0.1, gt=0, lt=0.5)
+
+    @model_validator(mode="after")
+    def validate_cluster_bounds(self) -> AnomalySettings:
+        if self.max_clusters < self.min_clusters:
+            raise ValueError(
+                f"max_clusters ({self.max_clusters}) must be >= min_clusters ({self.min_clusters})"
+            )
+        return self
+
+
+# ---------------------------------------------------------------------------
+# Feature Tuning settings (P8 — Analysis & Ranking Tuning)
+# ---------------------------------------------------------------------------
+
+
+class FeatureSettings(BaseModel):
+    """Parameters for rolling window aggregation and anomaly scaling."""
+
+    rolling_window_seconds: int = Field(default=300, ge=10, le=7200)
+    resample_step_seconds: int = Field(default=60, ge=10, le=1800)
+    zscore_threshold: float = Field(default=3.0, ge=0.5, le=10.0)
+
+
+# ---------------------------------------------------------------------------
+# Scenario Ranker Weights (P8 — Analysis & Ranking Tuning)
+# ---------------------------------------------------------------------------
+
+
+class RankingSettings(BaseModel):
+    """Raw weight tuning for multi-criteria prioritization."""
+
+    weight_confidence: float = Field(default=0.35, ge=0.0, le=10.0)
+    weight_historical: float = Field(default=0.25, ge=0.0, le=10.0)
+    weight_coverage: float = Field(default=0.20, ge=0.0, le=10.0)
+    weight_safety: float = Field(default=0.20, ge=0.0, le=10.0)
+
+
+# ---------------------------------------------------------------------------
+# Safety bounds (P8 — Analysis & Ranking Tuning)
+# ---------------------------------------------------------------------------
+
+
+class SafetySettings(BaseModel):
+    """Operator boundaries to prevent service-mesh disruption."""
+
+    max_affected_nodes: int = Field(default=2, ge=1)
+    blocked_namespaces: list[str] = Field(
+        default_factory=lambda: ["kube-system", "monitoring"]
+    )
+
+
+# ---------------------------------------------------------------------------
 # History settings (P5 — SQLite History Loop)
 # ---------------------------------------------------------------------------
 
@@ -118,6 +194,12 @@ class ChaosGenSettings(BaseModel):
     hints: UserHints = Field(default_factory=UserHints)
     llm_provider: str = "ollama"
     llm_model: str | None = None
+    developer_mode: bool = False
+    telemetry: TelemetrySettings = Field(default_factory=TelemetrySettings)
+    anomaly: AnomalySettings = Field(default_factory=AnomalySettings)
+    features: FeatureSettings = Field(default_factory=FeatureSettings)
+    ranking: RankingSettings = Field(default_factory=RankingSettings)
+    safety: SafetySettings = Field(default_factory=SafetySettings)
     gatekeeper: GatekeeperSettings = Field(default_factory=GatekeeperSettings)
     history: HistorySettings = Field(default_factory=HistorySettings)
 
@@ -164,7 +246,7 @@ def _check_no_inline_secrets(raw: dict[str, Any]) -> None:
 
 def load_settings(path: str | None = None) -> ChaosGenSettings:
     """
-    Load settings from YAML. Falls back to defaults if file doesn't exist.
+    Load settings from YAML. Falls back to defaults if file doesn't exist or is invalid.
     Runs secret-leak guard before parsing into Pydantic models.
     """
     settings_path = SETTINGS_FILE if path is None else __import__("pathlib").Path(path)
@@ -173,9 +255,17 @@ def load_settings(path: str | None = None) -> ChaosGenSettings:
         logger.debug("No settings file at %s — using defaults", settings_path)
         return ChaosGenSettings()
 
-    raw = yaml.safe_load(settings_path.read_text(encoding="utf-8")) or {}
-    _check_no_inline_secrets(raw)
-    return ChaosGenSettings.model_validate(raw)
+    try:
+        raw = yaml.safe_load(settings_path.read_text(encoding="utf-8")) or {}
+        _check_no_inline_secrets(raw)
+        return ChaosGenSettings.model_validate(raw)
+    except Exception as e:
+        logger.warning(
+            "Failed to load settings from %s due to: %s. Falling back to default settings.",
+            settings_path,
+            e,
+        )
+        return ChaosGenSettings()
 
 
 def save_settings(settings: ChaosGenSettings, path: str | None = None) -> None:

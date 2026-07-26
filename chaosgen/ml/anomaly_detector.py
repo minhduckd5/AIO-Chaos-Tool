@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import joblib
 import numpy as np
@@ -29,20 +29,70 @@ class AnomalyDetector:
         contamination: float = 0.1,
         n_clusters: int = 5,
         random_state: int = 42,
+        clustering_mode: str = "auto",
+        min_clusters: int = 2,
+        max_clusters: int = 15,
+        settings: Optional[Any] = None,
     ):
-        self.contamination = contamination
-        self.n_clusters = n_clusters
-        self.random_state = random_state
+        if settings is not None:
+            self.contamination = getattr(settings, "contamination", contamination)
+            self.n_clusters = getattr(settings, "n_clusters", n_clusters)
+            self.clustering_mode = getattr(settings, "clustering_mode", clustering_mode)
+            self.min_clusters = getattr(settings, "min_clusters", min_clusters)
+            self.max_clusters = getattr(settings, "max_clusters", max_clusters)
+        else:
+            self.contamination = contamination
+            self.n_clusters = n_clusters
+            self.clustering_mode = clustering_mode
+            self.min_clusters = min_clusters
+            self.max_clusters = max_clusters
 
+        self.random_state = random_state
         self.scaler = StandardScaler()
         self.iso_forest = IsolationForest(
-            contamination=contamination,
+            contamination=self.contamination,
             random_state=random_state,
             n_jobs=-1,
         )
         self.kmeans: Optional[KMeans] = None
         self._is_fitted = False
         self._feature_names: List[str] = []
+
+    def _choose_k_silhouette(self, anomaly_features: np.ndarray) -> int:
+        """Choose optimal KMeans cluster count k using Silhouette Score on anomalous features."""
+        from sklearn.metrics import silhouette_score
+
+        n_samples = len(anomaly_features)
+        if n_samples <= 1:
+            return 1
+        if n_samples == 2:
+            return 2
+
+        min_k = max(2, min(self.min_clusters, n_samples))
+        max_k = min(self.max_clusters, n_samples - 1)
+
+        if max_k < min_k:
+            return min_k
+
+        best_k = min_k
+        best_score = -1.0
+
+        for k in range(min_k, max_k + 1):
+            try:
+                km = KMeans(n_clusters=k, random_state=self.random_state, n_init=10)
+                labels = km.fit_predict(anomaly_features)
+                if len(set(labels)) < 2:
+                    continue
+                score = float(silhouette_score(anomaly_features, labels))
+                if score > best_score:
+                    best_score = score
+                    best_k = k
+            except Exception as e:
+                logger.debug("Silhouette calculation failed for k=%d: %s", k, e)
+                continue
+
+        logger.info("Auto-K Silhouette selected k=%d (best_score=%.3f, anomaly_windows=%d)", best_k, best_score, n_samples)
+        return best_k
 
     def fit(self, features: pd.DataFrame) -> "AnomalyDetector":
         """Train IsolationForest on baseline feature matrix."""
@@ -59,15 +109,31 @@ class AnomalyDetector:
 
     def detect(self, features: pd.DataFrame) -> List[AnomalyCluster]:
         """
-        Detect anomalies and cluster them by behavioral similarity.
-        Returns a list of AnomalyCluster objects.
+        Identify anomalies in *features* using fitted IsolationForest,
+        then cluster anomalous windows using KMeans.
         """
-        if not self._is_fitted:
-            raise RuntimeError("AnomalyDetector must be fitted before detection.")
-
-        scaled = self.scaler.transform(features.values)
-        labels = self.iso_forest.predict(scaled)
-        scores = self.iso_forest.decision_function(scaled)
+        expected_scaler_features = getattr(self.scaler, "n_features_in_", None)
+        if not self._is_fitted or (expected_scaler_features is not None and features.shape[1] != expected_scaler_features):
+            if self._is_fitted:
+                logger.warning(
+                    "Feature count mismatch: model expects %d features, but got %d. Falling back to dynamic refit.",
+                    expected_scaler_features, features.shape[1]
+                )
+            self.scaler = StandardScaler()
+            scaled = self.scaler.fit_transform(features.values)
+            self.iso_forest = IsolationForest(
+                contamination=self.contamination,
+                random_state=self.random_state,
+                n_jobs=-1,
+            )
+            self.iso_forest.fit(scaled)
+            labels = self.iso_forest.predict(scaled)
+            scores = self.iso_forest.decision_function(scaled)
+            self.kmeans = None  # Reset KMeans to force dynamic fit on the new scaled features
+        else:
+            scaled = self.scaler.transform(features.values)
+            labels = self.iso_forest.predict(scaled)
+            scores = self.iso_forest.decision_function(scaled)
 
         anomaly_mask = labels == -1
         anomaly_count = anomaly_mask.sum()
@@ -81,9 +147,38 @@ class AnomalyDetector:
         anomaly_scores = scores[anomaly_mask]
         anomaly_indices = features.index[anomaly_mask]
 
-        actual_k = min(self.n_clusters, anomaly_count)
-        self.kmeans = KMeans(n_clusters=actual_k, random_state=self.random_state, n_init=10)
-        cluster_labels = self.kmeans.fit_predict(anomaly_features)
+        # Check if pre-trained KMeans model is already loaded
+        if self.kmeans is not None:
+            expected_features = getattr(self.kmeans, "n_features_in_", None)
+            if expected_features is not None and anomaly_features.shape[1] != expected_features:
+                logger.warning(
+                    "Feature dimension mismatch: model expects %d, got %d. Falling back to dynamic fit.",
+                    expected_features, anomaly_features.shape[1]
+                )
+                if self.clustering_mode == "fixed":
+                    actual_k = min(self.n_clusters, anomaly_count)
+                else:
+                    actual_k = self._choose_k_silhouette(anomaly_features)
+
+                if anomaly_count == 1:
+                    cluster_labels = np.zeros(1, dtype=int)
+                else:
+                    self.kmeans = KMeans(n_clusters=actual_k, random_state=self.random_state, n_init=10)
+                    cluster_labels = self.kmeans.fit_predict(anomaly_features)
+            else:
+                cluster_labels = self.kmeans.predict(anomaly_features)
+        else:
+            # Dynamic Fit Mode
+            if self.clustering_mode == "fixed":
+                actual_k = min(self.n_clusters, anomaly_count)
+            else:
+                actual_k = self._choose_k_silhouette(anomaly_features)
+
+            if anomaly_count == 1:
+                cluster_labels = np.zeros(1, dtype=int)
+            else:
+                self.kmeans = KMeans(n_clusters=actual_k, random_state=self.random_state, n_init=10)
+                cluster_labels = self.kmeans.fit_predict(anomaly_features)
 
         return self._build_clusters(
             anomaly_features, anomaly_scores, anomaly_indices,
@@ -129,6 +224,149 @@ class AnomalyDetector:
         self._is_fitted = True
         logger.info("Model loaded from %s", path)
         return self
+
+    def get_timeline_data(self, features: pd.DataFrame) -> pd.DataFrame:
+        """
+        Computes the normalized anomaly scores and assigns KMeans cluster labels
+        to anomalous windows. Returns a DataFrame with columns ['score', 'anomaly_cluster'].
+        """
+        if not self._is_fitted:
+            raise RuntimeError("AnomalyDetector must be fitted before scoring.")
+
+        expected_features = getattr(self.scaler, "n_features_in_", None)
+        if expected_features is not None and features.shape[1] != expected_features:
+            logger.warning(
+                "Feature count mismatch: model expects %d features, but got %d. "
+                "Falling back to dynamic fit (unsupervised mode).",
+                expected_features, features.shape[1]
+            )
+            scaler = StandardScaler()
+            scaled = scaler.fit_transform(features.values)
+            iso_forest = IsolationForest(
+                contamination=self.contamination,
+                random_state=self.random_state,
+                n_jobs=-1,
+            )
+            iso_forest.fit(scaled)
+            scores = iso_forest.decision_function(scaled)
+            labels = iso_forest.predict(scaled)
+        else:
+            scaled = self.scaler.transform(features.values)
+            scores = self.iso_forest.decision_function(scaled)
+            labels = self.iso_forest.predict(scaled)
+
+        anomaly_mask = labels == -1
+        anomaly_count = anomaly_mask.sum()
+
+        raw_scores = -scores
+        min_score = raw_scores.min()
+        max_score = raw_scores.max()
+        if max_score > min_score:
+            normalized_scores = (raw_scores - min_score) / (max_score - min_score)
+        else:
+            normalized_scores = np.zeros_like(raw_scores)
+
+        timeline = pd.DataFrame(index=features.index)
+        timeline['score'] = normalized_scores
+        timeline['anomaly_cluster'] = -1
+
+        if anomaly_count > 0:
+            anomaly_features = scaled[anomaly_mask]
+            if self.kmeans is not None and getattr(self.kmeans, "n_features_in_", None) == anomaly_features.shape[1]:
+                cluster_labels = self.kmeans.predict(anomaly_features)
+            else:
+                actual_k = min(self.n_clusters, anomaly_count)
+                temp_kmeans = KMeans(n_clusters=actual_k, random_state=self.random_state, n_init=10)
+                cluster_labels = temp_kmeans.fit_predict(anomaly_features)
+            
+            timeline.loc[anomaly_mask, 'anomaly_cluster'] = cluster_labels
+
+        return timeline
+
+    def plot_timeline(self, features: pd.DataFrame, output_path: str) -> None:
+        """
+        Generates a timeline plot showing the system anomaly score over time,
+        highlighting anomaly points colored by their KMeans Cluster ID.
+        """
+        import os
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        import matplotlib.dates as mdates
+
+        timeline = self.get_timeline_data(features)
+        anomaly_count = (timeline['anomaly_cluster'] != -1).sum()
+
+        # Build cluster summaries for legend
+        cluster_info_map = {}
+        if anomaly_count > 0:
+            try:
+                clusters, _ = self.detect_and_summarize(features)
+                cluster_info_map = {c.cluster_id: c for c in clusters}
+            except Exception as e:
+                logger.warning("Could not build cluster summaries for legend: %s", e)
+
+        # Generate the plot
+        plt.figure(figsize=(14, 7))
+        plt.plot(timeline.index, timeline['score'], color='#BDC3C7', label='Outlier Score (Trace)', zorder=1, linewidth=1.5)
+
+        # Color palette for clusters: premium, vibrant colors
+        colors = ['#FF5E5B', '#00ADFF', '#00E676', '#FFA500', '#D500F9', '#FFD700', '#00CED1', '#FF1493', '#9B59B6', '#1ABC9C']
+
+        # Plot normal points
+        normal_mask = timeline['anomaly_cluster'] == -1
+        plt.scatter(timeline.index[normal_mask], timeline.loc[normal_mask, 'score'], 
+                    color='#7F8C8D', alpha=0.3, s=15, label='Normal State', zorder=2)
+
+        # Plot each cluster separately to show them in the legend
+        cluster_labels = timeline.loc[~normal_mask, 'anomaly_cluster'].values
+        unique_clusters = sorted(list(set(cluster_labels))) if anomaly_count > 0 else []
+        for cid in unique_clusters:
+            cid_mask = timeline['anomaly_cluster'] == cid
+            cluster_color = colors[cid % len(colors)]
+            
+            info = cluster_info_map.get(cid)
+            if info:
+                # Clean up feature names to make the legend readable (e.g. drop prefixes/suffixes)
+                cleaned_feats = []
+                for f, _ in info.dominant_features[:2]:
+                    parts = f.split("__")
+                    cleaned_feats.append(parts[1] if len(parts) >= 2 else f)
+                top_feats = ", ".join(cleaned_feats)
+                label_text = f"Cluster {cid} ({info.sample_count} windows): {top_feats}"
+            else:
+                label_text = f"Cluster {cid}"
+                
+            plt.scatter(timeline.index[cid_mask], timeline.loc[cid_mask, 'score'],
+                        color=cluster_color, s=50, label=label_text, zorder=3, edgecolors='black', linewidths=0.5)
+
+        # Set title, labels, formatting
+        plt.title('System Anomaly Timeline (Color-Coded by Behavioral Cluster)', fontsize=14, fontweight='bold', pad=15)
+        plt.xlabel('Timestamp (UTC)', fontsize=12)
+        plt.ylabel('Normalized Outlier Score (Higher = More Anomalous)', fontsize=12)
+        
+        is_datetime = isinstance(features.index, pd.DatetimeIndex) or (
+            len(features.index) > 0 and isinstance(features.index[0], (pd.Timestamp, datetime))
+        )
+
+        # Format dates nicely if they are DatetimeIndex
+        if is_datetime:
+            plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
+            plt.gca().xaxis.set_major_locator(mdates.AutoDateLocator())
+            plt.gcf().autofmt_xdate()
+
+        plt.grid(True, linestyle='--', alpha=0.5)
+        plt.legend(loc='upper left', frameon=True, facecolor='white', edgecolor='#BDC3C7', framealpha=0.9)
+        plt.tight_layout()
+
+        # Save plot
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        plt.savefig(output_path, dpi=150)
+        plt.close()
+        logger.info("Anomaly timeline plot saved to %s", output_path)
+
 
     def _build_clusters(
         self,
