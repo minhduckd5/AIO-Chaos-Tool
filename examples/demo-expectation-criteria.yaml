@@ -1,0 +1,29 @@
+# P0-B — Operational expectation criteria (advisor demo verdict beat)
+#
+# Edit prometheus.url / query / threshold to match YOUR lab labels before defense.
+# Claim text is what you read aloud; checks are what ChaosGen measures.
+
+claim: >
+  Under CPU starvation / load, ready replicas for the frontend deployment
+  recover to the configured capacity within 45 seconds (autoscaling SLA).
+
+expectations:
+  # Soft liveness — optional so a single bad health URL does not dominate
+  - id: http_alive
+    type: http_health
+    url: http://192.168.31.220:8080/health
+    required: false
+
+  # Core SLA — required (Edisoft-style capacity timing)
+  - id: scale_up_sla
+    type: prometheus_threshold
+    url: http://192.168.31.220:9090
+    # Adjust deployment/namespace labels for microservices-demo
+    query: sum(kube_deployment_status_replicas_ready{deployment="frontend"})
+    op: ">="
+    threshold: 2
+    window_seconds: 45
+    sample_interval_seconds: 5
+
+# Also accepted (legacy promote path still works):
+# http_health: http://192.168.31.220:8080/health

@@ -10,6 +10,7 @@ Command groups:
     chaosgen promote            Promote a described incident to the dynamic catalog
     chaosgen run                Execute approved scenarios (HITL gate)
     chaosgen evaluate           KPI and A/B evaluation reports
+    chaosgen verdict            Operational expectation PASS/FAIL + rationale (P0-B)
     chaosgen status             Module and orchestrator status
     chaosgen config             Settings & API key management
 """
@@ -162,7 +163,7 @@ def discover(config_path, arch, env_type, output):
 )
 @click.option(
     "--export", "export_path", default=None, type=click.Path(exists=True),
-    help="Path to an export bundle or parent exports/ directory.",
+    help="Path to an export bundle, CSV, zip/tar, or parent exports/ directory.",
 )
 @click.option(
     "--check", is_flag=True, default=False,
@@ -182,10 +183,19 @@ def discover(config_path, arch, env_type, output):
     help="After analysis, run scenario generation (like chaosgen generate).",
 )
 @click.option("--provider", type=click.Choice(["ollama", "openai", "anthropic", "groq"]), default=None)
-@click.option("--top-n", default=5, show_default=True)
+@click.option("--top-n", default=None, type=int, help="Ranked scenario cap (default: settings.advisor.top_n_scenarios).")
+@click.option(
+    "--confidence-threshold",
+    default=None,
+    type=float,
+    help="Drop LLM hypotheses below this confidence (default: settings.advisor.confidence_threshold).",
+)
 @click.option("--config", "config_path", default=None, help="Path to settings.yaml.")
 @click.option("--model-path", default=None, help="Path to pre-trained ML model joblib file.")
-def analyze(live, export_path, check, hours, start, end, with_generate, provider, top_n, config_path, model_path):
+def analyze(
+    live, export_path, check, hours, start, end, with_generate, provider, top_n,
+    confidence_threshold, config_path, model_path,
+):
     """Analyze metrics/logs from live stack or offline export; optional scenario generation."""
     from chaosgen.config.settings import load_settings
     from chaosgen.config.telemetry_endpoints import resolve_loki_url, resolve_prometheus_url
@@ -209,6 +219,14 @@ def analyze(live, export_path, check, hours, start, end, with_generate, provider
         if any(str(msg).startswith("FAIL") for msg in health.values()):
             sys.exit(1)
         return
+
+    # MODIFIED: P7 — reject --hours together with absolute --start/--end
+    if hours is not None and (start is not None or end is not None):
+        raise click.ClickException(
+            "Use either --hours (relative) or --start/--end (absolute), not both."
+        )
+    if (start is None) ^ (end is None):
+        raise click.ClickException("Both --start and --end are required for absolute windows.")
 
     if export_path:
         click.echo(f"[ChaosGen] Loading offline export: {export_path}")
@@ -236,6 +254,7 @@ def analyze(live, export_path, check, hours, start, end, with_generate, provider
     click.secho(f"\n=== Anomaly Analysis ({source}) ===", bold=True)
     click.echo(f"  Feature windows: {feature_rows}")
     click.echo(f"  Anomaly clusters: {len(clusters)}")
+    click.echo(f"  Lookback hours: {window.lookback_hours:.2f}")
 
     if not summaries:
         click.secho("  No anomalies detected (or insufficient feature data).", fg="yellow")
@@ -257,7 +276,8 @@ def analyze(live, export_path, check, hours, start, end, with_generate, provider
         lookback_hours=window.lookback_hours,
         provider=provider,
         model=None,
-        top_n=top_n,
+        top_n=top_n if top_n is not None else settings.advisor.top_n_scenarios,
+        confidence_threshold=confidence_threshold,
         output="table",
         config_path=config_path,
     )
@@ -271,7 +291,7 @@ def analyze(live, export_path, check, hours, start, end, with_generate, provider
 @main.command("train-model")
 @click.option(
     "--export", "export_paths", default=None, multiple=True, type=click.Path(exists=True),
-    help="Path to reference telemetry export bundle folder(s). Can be specified multiple times.",
+    help="Prom/Loki bundle dir, CSV file/dir, or zip/tar of the same. Repeatable.",
 )
 @click.option(
     "--output-model", "output_path", default="./default_model.joblib",
@@ -289,8 +309,13 @@ def train_model(export_paths, output_path, live, hours, config_path):
     from chaosgen.config.settings import load_settings
     from chaosgen.ingestion.export_loader import ExportLoader
     from chaosgen.ingestion.telemetry_factory import build_telemetry_collector
-    from chaosgen.ml.feature_engineering import FeatureEngineer
     from chaosgen.ml.anomaly_detector import AnomalyDetector
+    from chaosgen.ml.canonical_features import (
+        CANONICAL_SCHEMA_VERSION,
+        apply_canonical_features,
+    )
+    from chaosgen.ml.cluster_labels import ClusterLabelStore
+    from chaosgen.ml.feature_engineering import FeatureEngineer
 
     settings = load_settings(config_path)
 
@@ -298,7 +323,7 @@ def train_model(export_paths, output_path, live, hours, config_path):
         raise click.ClickException("Must specify at least one --export (reference dataset) or --live.")
 
     feature_dfs = []
-    fe = FeatureEngineer()
+    fe = FeatureEngineer(settings=settings.features)
 
     if export_paths:
         for path in export_paths:
@@ -311,45 +336,66 @@ def train_model(export_paths, output_path, live, hours, config_path):
                 f"Log streams: {len(dataset.logs)}"
             )
             features = fe.transform(dataset)
+            features = apply_canonical_features(features, settings.features)
             if not features.empty:
                 feature_dfs.append(features)
     else:
         click.echo(f"[ChaosGen] Collecting live telemetry for training ({hours}h lookback)...")
         collector = build_telemetry_collector(settings)
-        dataset = collector.collect_baseline(duration_hours=hours)
+        dataset = collector.collect_baseline(duration_hours=hours, step=settings.telemetry.step)
         click.echo(
             f"  Series: {len(dataset.metrics)} | "
             f"Samples: {dataset.total_samples} | "
             f"Log streams: {len(dataset.logs)}"
         )
         features = fe.transform(dataset)
+        features = apply_canonical_features(features, settings.features)
         if not features.empty:
             feature_dfs.append(features)
 
     if not feature_dfs:
         raise click.ClickException("No feature data extracted from dataset(s); aborting training.")
 
-    combined_features = pd.concat(feature_dfs, axis=0).sort_index()
+    # MODIFIED: align columns across exports; missing metrics → 0 (avoids NaN KMeans crash)
+    combined_features = pd.concat(feature_dfs, axis=0, sort=True)
+    combined_features = combined_features.fillna(0.0)
     combined_features = combined_features[~combined_features.index.duplicated(keep="first")]
+    combined_features = combined_features.sort_index()
 
     click.echo(f"[ChaosGen] Training Anomaly Detector (IsolationForest & KMeans) on {len(combined_features)} samples...")
-    detector = AnomalyDetector()
+    detector = AnomalyDetector(settings=settings.anomaly)
+    if settings.features.canonical_enabled:
+        detector.canonical_schema_version = CANONICAL_SCHEMA_VERSION
     detector.fit(combined_features)
 
+    clusters = []
     try:
-        detector.detect(combined_features)
+        detected = detector.detect(combined_features)
+        if isinstance(detected, list):
+            clusters = detected
     except Exception as e:
         click.secho(f"Warning during initial KMeans fit: {e}", fg="yellow")
 
     click.echo(f"[ChaosGen] Saving model weights to: {output_path}")
     detector.save_model(output_path)
+
+    # MODIFIED: P0-A — write editable cluster label sidecar stub
+    cluster_ids = [c.cluster_id for c in clusters]
+    if not cluster_ids and getattr(detector, "last_chosen_k", None):
+        cluster_ids = list(range(int(detector.last_chosen_k)))
+    if cluster_ids:
+        store = ClusterLabelStore.sidecar_for_model(output_path)
+        label_path = store.write_stub(cluster_ids, model_path=output_path)
+        click.echo(f"[ChaosGen] Cluster label stub written to: {label_path}")
+        click.echo("  Edit name/description fields, then reuse via --model-path / anomaly.default_model_path.")
+
     click.secho("Model training and serialization completed successfully.", fg="green")
 
 
 @main.command("plot-anomalies")
 @click.option(
     "--export", "export_path", required=True, type=click.Path(exists=True),
-    help="Path to a reference telemetry export bundle folder.",
+    help="Path to a reference telemetry export bundle, CSV, or zip/tar.",
 )
 @click.option(
     "--model-path", "model_path", required=True, type=click.Path(exists=True),
@@ -366,6 +412,7 @@ def plot_anomalies(export_path, model_path, output_path, config_path):
     from chaosgen.ingestion.export_loader import ExportLoader
     from chaosgen.ml.feature_engineering import FeatureEngineer
     from chaosgen.ml.anomaly_detector import AnomalyDetector
+    from chaosgen.ml.canonical_features import apply_canonical_features
 
     settings = load_settings(config_path)
 
@@ -380,8 +427,9 @@ def plot_anomalies(export_path, model_path, output_path, config_path):
     )
 
     click.echo("[ChaosGen] Running Feature Engineering...")
-    fe = FeatureEngineer()
+    fe = FeatureEngineer(settings=settings.features)
     features = fe.transform(dataset)
+    features = apply_canonical_features(features, settings.features)
     if features.empty:
         raise click.ClickException("No feature data extracted from dataset; aborting plot.")
 
@@ -481,6 +529,7 @@ def _generate_from_analysis(
     skip_gatekeeper=False,
     show_transient=False,
     save_report_path=None,
+    confidence_threshold=None,
 ):
     """Run shared advisor pipeline and print ranked scenarios."""
     from chaosgen.advisor.context_builder import ContextBuilder
@@ -521,6 +570,7 @@ def _generate_from_analysis(
         skip_gatekeeper=skip_gatekeeper,
         generate_chaos=True,
         report_path=report_path,
+        confidence_threshold=confidence_threshold,
     )
     _print_gatekeeper_table(report, show_transient=show_transient)
 
@@ -537,9 +587,15 @@ def _generate_from_analysis(
         )
         return
 
-    ranker = ScenarioRanker(history_store=get_default_history_store(settings))
+    effective_top_n = top_n if top_n is not None else settings.advisor.top_n_scenarios
+    ranker = ScenarioRanker(
+        history_store=get_default_history_store(settings),
+        settings=settings.ranking,
+    )
     sources = {exp.name: "llm" for exp in report.generated_experiments}
-    ranked = ranker.rank(report.generated_experiments, sources=sources, top_n=top_n)
+    ranked = ranker.rank(
+        report.generated_experiments, sources=sources, top_n=effective_top_n
+    )
     if not ranked:
         click.secho("No scenarios ranked.", fg="yellow")
         return
@@ -615,7 +671,13 @@ def bootstrap(tier, namespace, output_dir):
     type=click.Choice(["auto", "microservices", "monolith", "modular_monolith", "event_driven", "client_server", "serverless"]),
     help="Architecture type override.",
 )
-@click.option("--top-n", default=5, show_default=True, help="Number of scenarios to return.")
+@click.option("--top-n", default=None, type=int, help="Number of scenarios to return (default: settings.advisor.top_n_scenarios).")
+@click.option(
+    "--confidence-threshold",
+    default=None,
+    type=float,
+    help="Drop LLM hypotheses below this confidence (default: settings.advisor.confidence_threshold).",
+)
 @click.option("--from-catalog", is_flag=True, default=False, help="Use pre-built catalog instead of LLM.")
 @click.option(
     "--output", type=click.Choice(["table", "json", "yaml"]),
@@ -626,7 +688,23 @@ def bootstrap(tier, namespace, output_dir):
 @click.option("--save-report", "save_report_path", default=None, help="Write AdvisorReport JSON to PATH.")
 @click.option("--config", "config_path", default=None, help="Path to settings.yaml.")
 @click.option("--model-path", default=None, help="Path to pre-trained ML model joblib file.")
-def generate(provider, model, arch, top_n, from_catalog, output, skip_gatekeeper, show_transient, save_report_path, config_path, model_path):
+@click.option(
+    "--export", "export_path", default=None, type=click.Path(exists=True),
+    help="Offline export bundle, CSV, or zip/tar (window from metadata or timestamps).",
+)
+@click.option("--hours", default=None, type=int, help="Lookback hours for live collect (default: settings or 24).")
+@click.option(
+    "--start", type=click.DateTime(formats=["%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]), default=None,
+    help="Absolute start datetime (UTC) for live collection.",
+)
+@click.option(
+    "--end", type=click.DateTime(formats=["%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]), default=None,
+    help="Absolute end datetime (UTC) for live collection.",
+)
+def generate(
+    provider, model, arch, top_n, confidence_threshold, from_catalog, output, skip_gatekeeper, show_transient,
+    save_report_path, config_path, model_path, export_path, hours, start, end,
+):
     """Generate AI chaos scenarios from anomaly data or the pre-built catalog."""
     from chaosgen.advisor.scenario_catalog import ScenarioCatalog
     from chaosgen.advisor.scenario_ranker import ScenarioRanker
@@ -667,18 +745,52 @@ def generate(provider, model, arch, top_n, from_catalog, output, skip_gatekeeper
         from chaosgen.advisor.report_store import default_report_path, save_report
         from chaosgen.advisor.scenario_ranker import ScenarioRanker
         from chaosgen.ingestion.analysis import analyze_dataset
+        from chaosgen.ingestion.export_loader import ExportLoader
         from chaosgen.ingestion.telemetry_factory import build_telemetry_collector
+        from chaosgen.ingestion.window import resolve_collection_window
 
         click.echo(f"  Provider: {effective_provider}")
         if skip_gatekeeper:
             click.secho("  WARNING: --skip-gatekeeper enabled (debug only)", fg="yellow")
 
+        # MODIFIED: P7 — same window contract as analyze (no hardcoded 24h)
+        if hours is not None and (start is not None or end is not None):
+            raise click.ClickException(
+                "Use either --hours (relative) or --start/--end (absolute), not both."
+            )
+        if (start is None) ^ (end is None):
+            raise click.ClickException("Both --start and --end are required for absolute windows.")
+
         ctx = ContextBuilder(report).build()
 
         try:
-            collector = build_telemetry_collector(settings)
-            dataset = collector.collect_baseline(duration_hours=24)
-            clusters, anomaly_summaries, _ = analyze_dataset(dataset, model_path=model_path)
+            if export_path:
+                click.echo(f"  Loading export: {export_path}")
+                loader = ExportLoader.resolve_bundle(export_path)
+                dataset = loader.load()
+                window = resolve_collection_window(dataset=dataset, settings=settings)
+            else:
+                window = resolve_collection_window(
+                    hours=hours, start=start, end=end, settings=settings,
+                )
+                collector = build_telemetry_collector(settings)
+                click.echo(
+                    f"  Collecting live telemetry "
+                    f"({window.start.isoformat()} -> {window.end.isoformat()}, "
+                    f"{window.lookback_hours:.1f}h)..."
+                )
+                if start and end:
+                    dataset = collector.collect_range(
+                        start=window.start, end=window.end, step=settings.telemetry.step,
+                    )
+                else:
+                    dataset = collector.collect_baseline(
+                        duration_hours=int(round(window.lookback_hours)),
+                        step=settings.telemetry.step,
+                    )
+            clusters, anomaly_summaries, _ = analyze_dataset(
+                dataset, model_path=model_path, settings=settings,
+            )
         except Exception as exc:
             click.secho(f"  Telemetry unavailable ({exc}), cannot run pipeline.", fg="red")
             sys.exit(1)
@@ -691,10 +803,11 @@ def generate(provider, model, arch, top_n, from_catalog, output, skip_gatekeeper
             clusters,
             anomaly_summaries,
             settings=settings,
-            lookback_hours=24.0,
+            lookback_hours=float(window.lookback_hours),
             context=ctx,
             skip_gatekeeper=skip_gatekeeper,
             generate_chaos=True,
+            confidence_threshold=confidence_threshold,
         )
         _print_gatekeeper_table(advisor_report, show_transient=show_transient)
         written = save_report(advisor_report, save_report_path)
@@ -705,8 +818,12 @@ def generate(provider, model, arch, top_n, from_catalog, output, skip_gatekeeper
 
     from chaosgen.storage.history import get_default_history_store
 
-    ranker = ScenarioRanker(history_store=get_default_history_store(settings))
-    ranked = ranker.rank(experiments, sources=sources, top_n=top_n)
+    effective_top_n = top_n if top_n is not None else settings.advisor.top_n_scenarios
+    ranker = ScenarioRanker(
+        history_store=get_default_history_store(settings),
+        settings=settings.ranking,
+    )
+    ranked = ranker.rank(experiments, sources=sources, top_n=effective_top_n)
 
     if not ranked:
         click.secho("No scenarios generated.", fg="yellow")
@@ -977,6 +1094,86 @@ def run(dry_run, approve_all, force, config):
             orchestrator.approve_and_run(i)
         else:
             click.echo(f"Skipped: {exp.name}")
+
+
+# ---------------------------------------------------------------------------
+# verdict  (P0-B — operational expectation evaluation)
+# ---------------------------------------------------------------------------
+
+
+@main.command("verdict")
+@click.option(
+    "--criteria", "criteria_file", required=True, type=click.Path(exists=True),
+    help="YAML/JSON with claim + expectations (see examples/demo-expectation-criteria.yaml).",
+)
+@click.option(
+    "--prometheus-url", default=None,
+    help="Override Prometheus base URL for threshold checks.",
+)
+@click.option(
+    "--no-poll", is_flag=True, default=False,
+    help="Evaluate once without waiting window_seconds (faster dry checks).",
+)
+@click.option(
+    "--experiment-name", default=None,
+    help="Label for the verdict report (optional).",
+)
+@click.option(
+    "--save", "save_path", default=None,
+    help="Write ExpectationVerdictReport JSON (default: config last_verdict.json).",
+)
+def verdict_cmd(criteria_file, prometheus_url, no_poll, experiment_name, save_path):
+    """Evaluate operational expectations and print PASS/FAIL/PARTIAL + rationale."""
+    import yaml
+    from chaosgen.advisor.catalog_promoter import (
+        evaluate_acceptance_detailed,
+        validate_acceptance_criteria,
+    )
+    from chaosgen.advisor.report_store import save_verdict_report
+    from chaosgen.config.telemetry_endpoints import resolve_prometheus_url
+    from chaosgen.config.settings import load_settings
+
+    raw = Path(criteria_file).read_text(encoding="utf-8")
+    if criteria_file.endswith((".yaml", ".yml")):
+        criteria = yaml.safe_load(raw) or {}
+    else:
+        criteria = json.loads(raw)
+
+    errors = validate_acceptance_criteria(criteria)
+    if errors:
+        raise click.ClickException("Invalid criteria:\n  - " + "\n  - ".join(errors))
+
+    settings = load_settings()
+    prom = prometheus_url
+    if not prom:
+        try:
+            prom = resolve_prometheus_url(settings)
+        except Exception:
+            prom = None
+
+    report = evaluate_acceptance_detailed(
+        criteria,
+        experiment_name=experiment_name,
+        poll=not no_poll,
+        prometheus_url=prom,
+    )
+    written = save_verdict_report(report, save_path)
+
+    color = {
+        "pass": "green",
+        "partial": "yellow",
+        "fail": "red",
+    }.get(report.verdict.value, "white")
+
+    click.secho(f"\n=== Operational Verdict: {report.verdict.value.upper()} ===", fg=color, bold=True)
+    click.echo(f"Claim: {report.claim.strip()}")
+    click.echo(f"Rationale: {report.rationale}")
+    click.echo("Checks:")
+    for c in report.checks:
+        mark = "PASS" if c.passed else "FAIL"
+        click.echo(f"  [{mark}] {c.id}: {c.message}")
+    click.echo(f"\nSaved: {written}")
+    click.echo("See docs/advisor-demo-verdict-beat.md for advisor demo narration.")
 
 
 # ---------------------------------------------------------------------------

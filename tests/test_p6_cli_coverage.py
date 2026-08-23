@@ -56,6 +56,8 @@ class TestCliEvaluateAndStatus:
              import pandas as pd
              mock_df = pd.DataFrame({"f1": [1, 2]})
              mock_transform.return_value = mock_df
+             mock_detect.return_value = []
+             mock_fit.return_value = MagicMock(last_chosen_k=0)
              
              result = runner.invoke(main, ["train-model", "--export", ".", "--output-model", "test_model.joblib"])
              
@@ -63,3 +65,27 @@ class TestCliEvaluateAndStatus:
              assert "Model training and serialization completed successfully." in result.output
              assert mock_fit.called
              assert mock_save.called
+
+
+class TestCliWindowFlags:
+    def test_analyze_hours_xor_start_end(self):
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "analyze",
+                "--hours", "24",
+                "--start", "2026-07-20T08:00:00Z",
+                "--end", "2026-07-21T08:00:00Z",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "either --hours" in result.output.lower() or "not both" in result.output.lower()
+
+    def test_generate_help_lists_window_flags(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["generate", "--help"])
+        assert result.exit_code == 0
+        assert "--hours" in result.output
+        assert "--start" in result.output
+        assert "--export" in result.output

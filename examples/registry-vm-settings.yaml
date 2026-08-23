@@ -18,6 +18,50 @@ hints:
 llm_provider: ollama
 llm_model: llama3.2:3b
 
+# P7 — telemetry window defaults + anomaly clustering
+telemetry:
+  default_lookback_hours: 24
+  step: "60s"
+
+anomaly:
+  clustering_mode: auto       # auto | fixed
+  n_clusters: 5               # used when clustering_mode=fixed
+  min_clusters: 2
+  max_clusters: 15
+  contamination: 0.1
+  default_model_path: models/merged_canonical.joblib
+
+# P8 — analysis & ranking tuning (defaults match pre-P8 code behavior)
+features:
+  rolling_window_seconds: 300   # alias: window_size_seconds
+  resample_step_seconds: 60     # alias: step_seconds
+  zscore_threshold: 3.0
+  canonical_enabled: true
+  canonical_rules_path: examples/canonical_features.yaml
+
+ingest:
+  log_query: '{namespace=~".+"}'
+  # custom_promql:
+  #   http_5xx_rate: 'sum(rate(http_requests_total{status=~"5.."}[5m])) by (service)'
+
+advisor:
+  confidence_threshold: 0.6
+  top_n_scenarios: 5
+  describer_max_retries: 2
+
+ranking:
+  weight_confidence: 0.35
+  weight_historical: 0.25
+  weight_coverage: 0.20
+  weight_safety: 0.20
+  recency_days: 7
+
+safety:
+  max_affected_nodes: 2
+  max_affected_pods_percent: 20
+  blocked_namespaces: [kube-system, monitoring]
+  blocked_services: [database-master]
+
 # Gatekeeper (?? real ??) — frequency x severity matrix + strict log boost (P1)
 gatekeeper:
   frequency_low_threshold: 0.5    # events/hour

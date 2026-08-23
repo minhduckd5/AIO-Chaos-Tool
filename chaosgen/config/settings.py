@@ -121,6 +121,8 @@ class AnomalySettings(BaseModel):
     min_clusters: int = Field(default=2, ge=1)
     max_clusters: int = Field(default=15, ge=1)
     contamination: float = Field(default=0.1, gt=0, lt=0.5)
+    # MODIFIED: P0-A — optional default joblib for classify-only inference
+    default_model_path: str | None = None
 
     @model_validator(mode="after")
     def validate_cluster_bounds(self) -> AnomalySettings:
@@ -139,9 +141,66 @@ class AnomalySettings(BaseModel):
 class FeatureSettings(BaseModel):
     """Parameters for rolling window aggregation and anomaly scaling."""
 
-    rolling_window_seconds: int = Field(default=300, ge=10, le=7200)
-    resample_step_seconds: int = Field(default=60, ge=10, le=1800)
+    model_config = {"populate_by_name": True}
+
+    # MODIFIED: P8 — accept plan aliases window_size_seconds / step_seconds
+    rolling_window_seconds: int = Field(
+        default=300, ge=10, le=7200, alias="window_size_seconds"
+    )
+    resample_step_seconds: int = Field(
+        default=60, ge=10, le=1800, alias="step_seconds"
+    )
     zscore_threshold: float = Field(default=3.0, ge=0.5, le=10.0)
+    # MODIFIED: canonical v1 — signal-type pooling for stable train/detect schema
+    canonical_enabled: bool = False
+    canonical_rules_path: str | None = "examples/canonical_features.yaml"
+
+    @model_validator(mode="after")
+    def warn_step_vs_window(self) -> FeatureSettings:
+        if self.resample_step_seconds > self.rolling_window_seconds:
+            logger.warning(
+                "features.resample_step_seconds (%d) > rolling_window_seconds (%d); "
+                "feature matrix may be sparse",
+                self.resample_step_seconds,
+                self.rolling_window_seconds,
+            )
+        return self
+
+
+# ---------------------------------------------------------------------------
+# Ingest settings (P8)
+# ---------------------------------------------------------------------------
+
+
+class IngestSettings(BaseModel):
+    """Prometheus/Loki query tuning beyond telemetry.step."""
+
+    log_query: str = '{namespace=~".+"}'
+    custom_promql: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_custom_promql(self) -> IngestSettings:
+        for name, query in self.custom_promql.items():
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("ingest.custom_promql keys must be non-empty strings")
+            if not isinstance(query, str) or not query.strip():
+                raise ValueError(
+                    f"ingest.custom_promql[{name!r}] must be a non-empty PromQL string"
+                )
+        return self
+
+
+# ---------------------------------------------------------------------------
+# Advisor settings (P8)
+# ---------------------------------------------------------------------------
+
+
+class AdvisorSettings(BaseModel):
+    """Scenario generation / describe sensitivity knobs."""
+
+    confidence_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+    top_n_scenarios: int = Field(default=5, ge=1, le=50)
+    describer_max_retries: int = Field(default=2, ge=0, le=10)
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +215,28 @@ class RankingSettings(BaseModel):
     weight_historical: float = Field(default=0.25, ge=0.0, le=10.0)
     weight_coverage: float = Field(default=0.20, ge=0.0, le=10.0)
     weight_safety: float = Field(default=0.20, ge=0.0, le=10.0)
+    recency_days: int = Field(default=7, ge=1, le=90)
+
+    @model_validator(mode="after")
+    def validate_weight_sum(self) -> RankingSettings:
+        total = (
+            self.weight_confidence
+            + self.weight_historical
+            + self.weight_coverage
+            + self.weight_safety
+        )
+        if total <= 0:
+            raise ValueError("ranking weights must sum to a positive value")
+        if abs(total - 1.0) > 0.01:
+            # Auto-normalize in-place (Pydantic v2: return self only)
+            logger.warning(
+                "ranking weights sum to %.4f (expected ~1.0); normalizing", total
+            )
+            self.weight_confidence = self.weight_confidence / total
+            self.weight_historical = self.weight_historical / total
+            self.weight_coverage = self.weight_coverage / total
+            self.weight_safety = self.weight_safety / total
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -167,8 +248,12 @@ class SafetySettings(BaseModel):
     """Operator boundaries to prevent service-mesh disruption."""
 
     max_affected_nodes: int = Field(default=2, ge=1)
+    max_affected_pods_percent: int = Field(default=20, ge=1, le=100)
     blocked_namespaces: list[str] = Field(
         default_factory=lambda: ["kube-system", "monitoring"]
+    )
+    blocked_services: list[str] = Field(
+        default_factory=lambda: ["database-master"]
     )
 
 
@@ -198,6 +283,8 @@ class ChaosGenSettings(BaseModel):
     telemetry: TelemetrySettings = Field(default_factory=TelemetrySettings)
     anomaly: AnomalySettings = Field(default_factory=AnomalySettings)
     features: FeatureSettings = Field(default_factory=FeatureSettings)
+    ingest: IngestSettings = Field(default_factory=IngestSettings)
+    advisor: AdvisorSettings = Field(default_factory=AdvisorSettings)
     ranking: RankingSettings = Field(default_factory=RankingSettings)
     safety: SafetySettings = Field(default_factory=SafetySettings)
     gatekeeper: GatekeeperSettings = Field(default_factory=GatekeeperSettings)

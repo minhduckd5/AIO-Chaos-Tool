@@ -80,16 +80,11 @@ def test_ranker_weight_normalization_uneven_weights():
 
 
 def test_ranker_weight_normalization_all_zero_fallback():
-    """Verify that setting all weights to zero falls back to defaults without division by zero."""
-    ranking_settings = RankingSettings(
-        weight_confidence=0.0,
-        weight_historical=0.0,
-        weight_coverage=0.0,
-        weight_safety=0.0,
-    )
-    ranker = ScenarioRanker(settings=ranking_settings)
-    # Should fall back to standard defaults (0.35, 0.25, 0.20, 0.20)
-    assert ranker._w_confidence == 0.35
-    assert ranker._w_historical == 0.25
-    assert ranker._w_coverage == 0.20
-    assert ranker._w_safety == 0.20
+    """All-zero ranking weights are rejected by P8 RankingSettings validation."""
+    with pytest.raises(ValueError, match="positive"):
+        RankingSettings(
+            weight_confidence=0.0,
+            weight_historical=0.0,
+            weight_coverage=0.0,
+            weight_safety=0.0,
+        )
