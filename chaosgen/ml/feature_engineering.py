@@ -73,6 +73,9 @@ class FeatureEngineer:
 
             idx = pd.to_datetime(ts.timestamps, unit="s", utc=True)
             raw = pd.Series(ts.values, index=idx, name=col_prefix, dtype=float)
+            raw = raw.sort_index()
+            if raw.index.has_duplicates:
+                raw = raw[~raw.index.duplicated(keep="last")]
 
             stats = self._compute_rolling_stats(raw)
             for stat_name, stat_series in stats.items():
@@ -109,7 +112,15 @@ class FeatureEngineer:
         if removed:
             logger.info("Z-score filter removed %d / %d rows (threshold=%.1f)",
                         removed, len(df), self.zscore_threshold)
-        return df.loc[mask]
+        filtered = df.loc[mask]
+        # MODIFIED: wide matrices with few rows can lose every row; keep unfiltered set
+        if filtered.empty and not df.empty:
+            logger.warning(
+                "Z-score filter removed all %d rows; keeping unfiltered matrix for training",
+                len(df),
+            )
+            return df
+        return filtered
 
     def _extract_log_features(self, log_streams: List[LogStream]) -> pd.DataFrame:
         """

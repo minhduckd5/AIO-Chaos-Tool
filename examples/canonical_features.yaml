@@ -1,0 +1,72 @@
+# Canonical signal-type pooling rules (v1).
+# Raw FeatureEngineer columns are matched by regex; pooled with max() per bucket+stat.
+
+schema_version: "1"
+
+stats:
+  - mean
+  - std
+  - roc
+  - p95
+
+signals:
+  cpu:
+    - cpu
+    - processor
+    - cpu_usage
+    - node_cpu
+    - cfs_throttled
+  memory:
+    - mem
+    - memory
+    - ram
+    - working_set
+    - MemAvailable
+  disk:
+    - disk
+    - io_
+    - filesystem
+    - fs_
+    - storage
+  network:
+    - network
+    - net_
+    - _rx_
+    - _tx_
+    - receive_bytes
+    - transmit_bytes
+  latency:
+    - latency
+    - duration
+    - histogram
+    - p50
+    - p95
+    - p99
+  errors:
+    - error
+    - 5xx
+    - fail
+    - exception
+    - fault
+  request_rate:
+    - request
+    - qps
+    - throughput
+    - http_server
+    - rpc_server
+  saturation:
+    - throttl
+    - saturation
+    - cfs
+  availability:
+    - "\\bup\\b"
+    - ready
+    - alive
+
+log_signals:
+  log_volume:
+    - log_volume
+  log_error_rate:
+    - error_rate
+
+pooling: max

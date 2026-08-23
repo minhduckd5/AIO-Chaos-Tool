@@ -72,6 +72,17 @@ class TestFeatureEngineer:
         df = fe.transform(dataset)
         assert isinstance(df, pd.DataFrame)
 
+    def test_zscore_filter_keeps_rows_when_all_would_drop(self):
+        """Wide sparse matrices must not train on zero rows."""
+        fe = FeatureEngineer(window_size=300, step=60, zscore_threshold=0.5)
+        idx = pd.date_range("2024-01-01", periods=5, freq="60s", tz="UTC")
+        wide = pd.DataFrame(
+            {f"m{i}": [float(i), float(i + 1), float(i + 2), float(i + 3), float(i + 4)] for i in range(120)},
+            index=idx,
+        )
+        filtered = fe._zscore_filter(wide)
+        assert not filtered.empty
+
     def test_empty_dataset(self):
         dataset = TelemetryDataset(
             metrics=[],
@@ -244,6 +255,8 @@ class TestAutoKSilhouette:
         clusters = detector.detect(features)
         assert isinstance(clusters, list)
         assert len(clusters) >= 1
+        assert detector.last_chosen_k is not None
+        assert detector.last_chosen_k >= 1
 
     def test_fixed_k_mode(self):
         from chaosgen.config.settings import AnomalySettings
@@ -256,3 +269,73 @@ class TestAutoKSilhouette:
         clusters = detector.detect(features)
         assert isinstance(clusters, list)
         assert len(clusters) <= 4
+
+    def test_auto_k_single_anomaly_window(self):
+        from chaosgen.config.settings import AnomalySettings
+        settings = AnomalySettings(clustering_mode="auto", min_clusters=2, max_clusters=5)
+        detector = AnomalyDetector(settings=settings, contamination=0.5)
+        # Tiny matrix: force a single outlier after fit on near-constant data + one spike
+        import pandas as pd
+        import numpy as np
+        rng = np.random.default_rng(0)
+        normal = rng.normal(0, 0.01, size=(40, 3))
+        spike = np.array([[10.0, 10.0, 10.0]])
+        features = pd.DataFrame(
+            np.vstack([normal, spike]),
+            columns=["a", "b", "c"],
+            index=pd.date_range("2026-01-01", periods=41, freq="min", tz="UTC"),
+        )
+        detector.fit(features)
+        clusters = detector.detect(features)
+        assert isinstance(clusters, list)
+        if clusters:
+            assert detector.last_chosen_k >= 1
+
+
+class TestCollectRange:
+    def test_collect_range_rejects_inverted(self):
+        from unittest.mock import MagicMock
+        from chaosgen.ingestion.collector import TelemetryCollector
+        from datetime import datetime, timezone
+
+        collector = TelemetryCollector(prometheus=MagicMock(), loki=None)
+        start = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+        end = datetime(2026, 7, 20, 10, 0, tzinfo=timezone.utc)
+        with pytest.raises(ValueError, match="strictly after"):
+            collector.collect_range(start=start, end=end)
+
+
+class TestClusterLabelStore:
+    def test_stub_and_annotate(self, tmp_path):
+        from chaosgen.ml.cluster_labels import ClusterLabelStore
+        from chaosgen.schemas.scenarios import AnomalySummary
+
+        model = tmp_path / "baseline.joblib"
+        model.write_bytes(b"stub")
+        store = ClusterLabelStore.sidecar_for_model(model)
+        store.write_stub([0, 1], model_path=model)
+        assert store.path.exists()
+
+        catalog = store.load()
+        catalog.labels[0].name = "cpu_spike"
+        store.save(catalog)
+
+        summaries = [
+            AnomalySummary(
+                service_name="svc-a",
+                top_features=[("cpu", 3.0)],
+                severity=0.8,
+                time_window="t",
+                source_cluster_id=0,
+            ),
+            AnomalySummary(
+                service_name="svc-b",
+                top_features=[("mem", 2.0)],
+                severity=0.5,
+                time_window="t",
+                source_cluster_id=1,
+            ),
+        ]
+        annotated = store.annotate_summaries(summaries)
+        assert annotated[0].service_name == "cpu_spike"
+        assert annotated[1].service_name == "svc-b"  # still stub cluster_1

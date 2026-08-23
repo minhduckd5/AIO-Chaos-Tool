@@ -10,6 +10,7 @@ from sklearn.cluster import KMeans
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
+from chaosgen.ml.canonical_features import align_features_to_model
 from chaosgen.schemas.scenarios import AnomalyCluster, AnomalySeverity, AnomalySummary
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,9 @@ class AnomalyDetector:
         self.kmeans: Optional[KMeans] = None
         self._is_fitted = False
         self._feature_names: List[str] = []
+        self.canonical_schema_version: Optional[str] = None
+        # MODIFIED: P7/P0 — last K chosen during detect (auto or fixed)
+        self.last_chosen_k: Optional[int] = None
 
     def _choose_k_silhouette(self, anomaly_features: np.ndarray) -> int:
         """Choose optimal KMeans cluster count k using Silhouette Score on anomalous features."""
@@ -107,11 +111,20 @@ class AnomalyDetector:
                      scaled.shape[0], scaled.shape[1])
         return self
 
+    def _align_for_inference(self, features: pd.DataFrame) -> pd.DataFrame:
+        """Reindex live features to the trained schema before scaler/IF."""
+        if self._feature_names:
+            return align_features_to_model(features, self._feature_names)
+        return features
+
     def detect(self, features: pd.DataFrame) -> List[AnomalyCluster]:
         """
         Identify anomalies in *features* using fitted IsolationForest,
         then cluster anomalous windows using KMeans.
         """
+        if self._is_fitted and self._feature_names:
+            features = self._align_for_inference(features)
+
         expected_scaler_features = getattr(self.scaler, "n_features_in_", None)
         if not self._is_fitted or (expected_scaler_features is not None and features.shape[1] != expected_scaler_features):
             if self._is_fitted:
@@ -141,6 +154,7 @@ class AnomalyDetector:
                      anomaly_count, len(features))
 
         if anomaly_count == 0:
+            self.last_chosen_k = 0
             return []
 
         anomaly_features = scaled[anomaly_mask]
@@ -162,11 +176,14 @@ class AnomalyDetector:
 
                 if anomaly_count == 1:
                     cluster_labels = np.zeros(1, dtype=int)
+                    actual_k = 1
                 else:
                     self.kmeans = KMeans(n_clusters=actual_k, random_state=self.random_state, n_init=10)
                     cluster_labels = self.kmeans.fit_predict(anomaly_features)
+                self.last_chosen_k = int(actual_k)
             else:
                 cluster_labels = self.kmeans.predict(anomaly_features)
+                self.last_chosen_k = int(getattr(self.kmeans, "n_clusters", len(set(cluster_labels))))
         else:
             # Dynamic Fit Mode
             if self.clustering_mode == "fixed":
@@ -176,9 +193,11 @@ class AnomalyDetector:
 
             if anomaly_count == 1:
                 cluster_labels = np.zeros(1, dtype=int)
+                actual_k = 1
             else:
                 self.kmeans = KMeans(n_clusters=actual_k, random_state=self.random_state, n_init=10)
                 cluster_labels = self.kmeans.fit_predict(anomaly_features)
+            self.last_chosen_k = int(actual_k)
 
         return self._build_clusters(
             anomaly_features, anomaly_scores, anomaly_indices,
@@ -208,6 +227,7 @@ class AnomalyDetector:
             "feature_names": self._feature_names,
             "contamination": self.contamination,
             "n_clusters": self.n_clusters,
+            "canonical_schema_version": self.canonical_schema_version,
         }
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         joblib.dump(state, path)
@@ -221,6 +241,7 @@ class AnomalyDetector:
         self._feature_names = state["feature_names"]
         self.contamination = state["contamination"]
         self.n_clusters = state["n_clusters"]
+        self.canonical_schema_version = state.get("canonical_schema_version")
         self._is_fitted = True
         logger.info("Model loaded from %s", path)
         return self
@@ -232,6 +253,9 @@ class AnomalyDetector:
         """
         if not self._is_fitted:
             raise RuntimeError("AnomalyDetector must be fitted before scoring.")
+
+        if self._feature_names:
+            features = self._align_for_inference(features)
 
         expected_features = getattr(self.scaler, "n_features_in_", None)
         if expected_features is not None and features.shape[1] != expected_features:
