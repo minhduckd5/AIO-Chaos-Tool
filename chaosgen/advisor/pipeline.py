@@ -104,7 +104,7 @@ def run_advisor_pipeline(
     generate_chaos: bool = True,
     write_manifests: bool = False,
     output_dir: str = "./generated_scenarios",
-    confidence_threshold: float = 0.6,
+    confidence_threshold: float | None = None,
     gatekeeper: Optional[IncidentGatekeeper] = None,
     describer: Optional[ScenarioDescriber] = None,
     llm_advisor: Optional[LLMAdvisor] = None,
@@ -121,6 +121,13 @@ def run_advisor_pipeline(
     """
     if lookback_hours <= 0:
         raise ValueError("lookback_hours must be > 0")
+
+    # MODIFIED: P8 — advisor knobs from settings when caller omits overrides
+    effective_confidence = (
+        confidence_threshold
+        if confidence_threshold is not None
+        else settings.advisor.confidence_threshold
+    )
 
     store = history_store
     if store is None and settings.history.enabled:
@@ -159,6 +166,7 @@ def run_advisor_pipeline(
         desc = describer or ScenarioDescriber(
             provider_name=settings.llm_provider,
             model=settings.llm_model,
+            max_retries=settings.advisor.describer_max_retries,
         )
         descriptions = desc.describe_batch(passed, summaries, context)
 
@@ -178,8 +186,11 @@ def run_advisor_pipeline(
         advisor = llm_advisor or LLMAdvisor(
             provider=build_provider(settings.llm_provider, model=settings.llm_model)
         )
+        from chaosgen.safety.governance import SafetyPolicy
+
         generator = scenario_generator or ScenarioGenerator(
-            confidence_threshold=confidence_threshold,
+            confidence_threshold=effective_confidence,
+            safety_policy=SafetyPolicy.from_settings(settings.safety),
         )
         hypotheses = advisor.interpret_anomalies(
             chaos_summaries,

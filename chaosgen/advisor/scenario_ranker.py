@@ -67,6 +67,8 @@ class ScenarioRanker:
         self._kpi = kpi_tracker
         self._blast = blast_radius_controller
         self._history = history_store
+        # MODIFIED: P8 — recency_days from RankingSettings
+        self._recency_days = int(getattr(settings, "recency_days", 7) or 7)
 
         if settings is not None:
             raw_w = [
@@ -248,7 +250,7 @@ class ScenarioRanker:
         """
         if self._history is not None:
             try:
-                return self._history.recent_fault_types(days=7)
+                return self._history.recent_fault_types(days=self._recency_days)
             except Exception as exc:
                 logger.debug("HistoryStore recent_fault_types failed: %s", exc)
 
@@ -256,7 +258,7 @@ class ScenarioRanker:
             return set()
         try:
             results = getattr(self._kpi, "_results", [])
-            cutoff = time.time() - _RECENCY_WINDOW_SECONDS
+            cutoff = time.time() - (self._recency_days * 24 * 3600)
             recent: set[FaultType] = set()
             for r in results:
                 ts = getattr(r, "timestamp", 0)

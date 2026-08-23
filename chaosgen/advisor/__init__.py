@@ -14,6 +14,7 @@ from chaosgen.advisor.pipeline import run_advisor_pipeline
 from chaosgen.config.settings import ChaosGenSettings, load_settings
 from chaosgen.ingestion.collector import TelemetryCollector
 from chaosgen.ml.anomaly_detector import AnomalyDetector
+from chaosgen.ml.canonical_features import apply_canonical_features
 from chaosgen.ml.feature_engineering import FeatureEngineer
 from chaosgen.schemas.faults import TargetSpec
 from chaosgen.schemas.scenarios import AdvisorReport
@@ -39,12 +40,12 @@ class ChaosAdvisor:
         skip_gatekeeper: bool = False,
     ):
         self.collector = collector
-        self.feature_engineer = FeatureEngineer()
-        self.anomaly_detector = AnomalyDetector()
         self.settings = settings or ChaosGenSettings(
             llm_provider="ollama",
             llm_model=model_name,
         )
+        self.feature_engineer = FeatureEngineer(settings=self.settings.features)
+        self.anomaly_detector = AnomalyDetector(settings=self.settings.anomaly)
         if self.settings.llm_model is None:
             self.settings.llm_model = model_name
         self.confidence_threshold = confidence_threshold
@@ -60,6 +61,7 @@ class ChaosAdvisor:
         logger.info("Collecting baseline telemetry for %d hours...", duration_hours)
         dataset = self.collector.collect_baseline(duration_hours=duration_hours)
         features = self.feature_engineer.transform(dataset)
+        features = apply_canonical_features(features, self.settings.features)
 
         if features.empty:
             raise RuntimeError("Feature extraction produced empty matrix. Check data sources.")
@@ -83,6 +85,7 @@ class ChaosAdvisor:
 
         dataset = self.collector.collect_baseline(duration_hours=lookback_hours)
         features = self.feature_engineer.transform(dataset)
+        features = apply_canonical_features(features, self.settings.features)
 
         if features.empty:
             logger.warning("No features extracted from recent telemetry.")

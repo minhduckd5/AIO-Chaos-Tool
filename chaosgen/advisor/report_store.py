@@ -19,11 +19,16 @@ from chaosgen.schemas.scenarios import AdvisorReport
 logger = logging.getLogger(__name__)
 
 LAST_REPORT_FILE = CONFIG_DIR / "last_report.json"
+LAST_VERDICT_FILE = CONFIG_DIR / "last_verdict.json"
 
 
 def default_report_path() -> Path:
     """Return the default on-disk path for the most recent advisor report."""
     return LAST_REPORT_FILE
+
+
+def default_verdict_path() -> Path:
+    return LAST_VERDICT_FILE
 
 
 def save_report(report: AdvisorReport, path: Optional[Path | str] = None) -> Path:
@@ -37,6 +42,17 @@ def save_report(report: AdvisorReport, path: Optional[Path | str] = None) -> Pat
     return target
 
 
+def save_verdict_report(report, path: Optional[Path | str] = None) -> Path:
+    """Persist ExpectationVerdictReport for advisor demo / CLI follow-up."""
+    target = Path(path) if path is not None else LAST_VERDICT_FILE
+    ensure_config_dir()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = report.model_dump(mode="json")
+    target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    logger.info("Expectation verdict saved to %s", target)
+    return target
+
+
 def load_report(path: Optional[Path | str] = None) -> AdvisorReport:
     """Load an ``AdvisorReport`` from JSON. Raises ``FileNotFoundError`` if missing."""
     target = Path(path) if path is not None else LAST_REPORT_FILE
@@ -44,3 +60,14 @@ def load_report(path: Optional[Path | str] = None) -> AdvisorReport:
         raise FileNotFoundError(f"No advisor report at {target}")
     data = json.loads(target.read_text(encoding="utf-8"))
     return AdvisorReport.model_validate(data)
+
+
+def load_verdict_report(path: Optional[Path | str] = None):
+    """Load the latest ExpectationVerdictReport (stakeholder / Evaluation UI)."""
+    from chaosgen.evaluation.expectation_verdict import ExpectationVerdictReport
+
+    target = Path(path) if path is not None else LAST_VERDICT_FILE
+    if not target.exists():
+        raise FileNotFoundError(f"No expectation verdict at {target}")
+    data = json.loads(target.read_text(encoding="utf-8"))
+    return ExpectationVerdictReport.model_validate(data)

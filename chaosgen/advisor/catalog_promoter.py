@@ -45,8 +45,8 @@ def validate_acceptance_criteria(criteria: Optional[Dict[str, Any]]) -> List[str
     """Pre-flight check acceptance criteria. Returns a list of error strings.
 
     Catches obvious garbage (LLM/operator typos) before it reaches disk and
-    later blows up inside SteadyStateValidator at verify time. PromQL is only
-    heuristically checked here; a full parse/dry-run is a P4/P5 enhancement.
+    later blows up inside SteadyStateValidator / ExpectationVerdictEngine at
+    verify time. PromQL is only heuristically checked here.
     """
     errors: List[str] = []
     if not criteria:
@@ -75,8 +75,41 @@ def validate_acceptance_criteria(criteria: Optional[Dict[str, Any]]) -> List[str
             ):
                 errors.append("prometheus.url must be a valid http(s) URL")
 
+    expectations = criteria.get("expectations")
+    if expectations is not None:
+        if not isinstance(expectations, list):
+            errors.append("expectations must be a list")
+        else:
+            for i, item in enumerate(expectations):
+                if not isinstance(item, dict):
+                    errors.append(f"expectations[{i}] must be an object")
+                    continue
+                etype = item.get("type")
+                if etype not in (
+                    "http_health",
+                    "prometheus_threshold",
+                    "prometheus_exists",
+                    "prometheus",
+                    None,
+                ):
+                    errors.append(f"expectations[{i}].type unsupported: {etype!r}")
+                if etype == "http_health":
+                    url = item.get("url")
+                    if not isinstance(url, str) or not url.startswith(_URL_PREFIXES):
+                        errors.append(f"expectations[{i}].url must be http(s)")
+                if etype in ("prometheus_threshold", "prometheus_exists", "prometheus"):
+                    q = item.get("query")
+                    if not isinstance(q, str) or not q.strip():
+                        errors.append(f"expectations[{i}].query required")
+                    if etype == "prometheus_threshold":
+                        if item.get("threshold") is None:
+                            errors.append(f"expectations[{i}].threshold required")
+                        if item.get("op") not in (None, ">=", "<=", ">", "<", "==", "!="):
+                            errors.append(f"expectations[{i}].op invalid")
+
+    known = {"http_health", "prometheus", "expectations", "claim"}
     for key in criteria:
-        if key not in ("http_health", "prometheus"):
+        if key not in known:
             logger.warning("Unknown acceptance_criteria key %r — kept but unvalidated", key)
 
     return errors
@@ -85,16 +118,52 @@ def validate_acceptance_criteria(criteria: Optional[Dict[str, Any]]) -> List[str
 def evaluate_acceptance(
     criteria: Optional[Dict[str, Any]],
     validator: SteadyStateValidator | None = None,
+    *,
+    experiment_name: str | None = None,
+    poll: bool = True,
+    prometheus_url: str | None = None,
 ) -> ExperimentVerdict:
-    """Run acceptance criteria through the steady-state validator post-experiment.
+    """Run acceptance / expectation criteria post-experiment.
 
-    Returns PASS when there are no criteria or all checks hold, FAIL otherwise.
-    PARTIAL is an operator decision (accepted residual risk), not inferred here.
+    Prefers ExpectationVerdictEngine when ``expectations`` or ``claim`` exist.
+    When a custom ``validator`` is injected and only legacy keys are present,
+    use that validator (tests / SteadyState-only callers).
+    PARTIAL is returned for optional-only failures (residual risk).
     """
     if not criteria:
         return ExperimentVerdict.PASS
+
+    from chaosgen.evaluation.expectation_verdict import (
+        ExpectationVerdictEngine,
+        criteria_has_expectations,
+    )
+
+    use_engine = bool(criteria.get("expectations") or criteria.get("claim"))
+    if use_engine or (criteria_has_expectations(criteria) and validator is None):
+        engine = ExpectationVerdictEngine(default_prometheus_url=prometheus_url)
+        report = engine.evaluate(
+            criteria, experiment_name=experiment_name, poll=poll
+        )
+        return report.verdict
+
     validator = validator or SteadyStateValidator()
     return ExperimentVerdict.PASS if validator.validate(criteria) else ExperimentVerdict.FAIL
+
+
+def evaluate_acceptance_detailed(
+    criteria: Optional[Dict[str, Any]],
+    *,
+    experiment_name: str | None = None,
+    poll: bool = True,
+    prometheus_url: str | None = None,
+):
+    """Return full ExpectationVerdictReport for CLI / orchestrator."""
+    from chaosgen.evaluation.expectation_verdict import ExpectationVerdictEngine
+
+    engine = ExpectationVerdictEngine(default_prometheus_url=prometheus_url)
+    return engine.evaluate(
+        criteria or {}, experiment_name=experiment_name, poll=poll
+    )
 
 
 class CatalogPromoter:
