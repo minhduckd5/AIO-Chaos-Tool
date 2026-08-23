@@ -65,7 +65,8 @@ class ScenarioCatalogView(QWidget):
 
         subtitle = QLabel(
             f"Browse {len(self._catalog)} pre-built chaos scenarios. "
-            "Filter by architecture and fault type, then add to the approval queue."
+            "Filter by architecture and fault type, then add to the approval queue. "
+            "Unknown→Known promote from Telemetry Triage lands here."
         )
         subtitle.setWordWrap(True)
         subtitle.setObjectName("viewSubtitle")

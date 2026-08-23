@@ -1,30 +1,28 @@
 """
-Evaluation view -- KPI summary cards and A/B comparison.
-Phase 7 placeholder with functional KPI display.
+Evaluation view — operational outcome for business stakeholders.
+
+A/B thesis KPIs remain available via CLI: ``chaosgen evaluate --ab``.
 """
 
-from PySide6.QtCore import Qt
+from __future__ import annotations
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog,
-    QScrollArea, QFrame, QMessageBox,
+    QScrollArea, QFrame, QTextEdit, QGroupBox,
 )
 
 from chaosgen.gui.theme import Colors, Fonts, Spacing
-from chaosgen.gui.views.dashboard import SummaryCard
-from chaosgen.evaluation.kpi_tracker import KPITracker
-from chaosgen.evaluation.ab_comparator import ABComparator
+from chaosgen.schemas.scenarios import ExperimentVerdict
 
 
 class EvaluationView(QWidget):
-    """KPI dashboard with A/B comparison and export capabilities."""
+    """Stakeholder operational verdict: claim → outcome → where to improve."""
 
     def __init__(self, controller, parent=None):
         super().__init__(parent)
         self._controller = controller
-        self._kpi_tracker = KPITracker()
-        self._comparator = ABComparator(self._kpi_tracker)
         self._init_ui()
+        self._refresh_operational()
 
     def _init_ui(self):
         scroll = QScrollArea(self)
@@ -41,100 +39,163 @@ class EvaluationView(QWidget):
         title.setObjectName("sectionTitle")
         layout.addWidget(title)
 
-        subtitle = QLabel("KPI tracking and A/B comparison of AI vs human scenarios")
+        subtitle = QLabel(
+            "After a chaos test: did the system meet the business claim, "
+            "and where should we improve?"
+        )
         subtitle.setObjectName("sectionSubtitle")
+        subtitle.setWordWrap(True)
         layout.addWidget(subtitle)
 
-        # KPI cards
-        cards_layout = QHBoxLayout()
-        cards_layout.setSpacing(Spacing.LG)
-        self._actionability_card = SummaryCard("Actionability Rate", "—", Colors.SUCCESS)
-        self._discovery_card = SummaryCard("Discovery Rate", "—", Colors.ACCENT)
-        self._time_card = SummaryCard("Avg Design Time", "—", Colors.WARNING)
-        self._total_card = SummaryCard("Total Experiments", "0", Colors.TEXT_SECONDARY)
-        for c in (self._actionability_card, self._discovery_card, self._time_card, self._total_card):
-            cards_layout.addWidget(c)
-        layout.addLayout(cards_layout)
-
-        # Comparison table
-        comp_header = QLabel("A/B Comparison")
-        comp_header.setStyleSheet(
-            f"color: {Colors.TEXT_PRIMARY}; font-size: {Fonts.SIZE_LARGE}px; font-weight: bold;"
+        # --- START MODIFICATION ---
+        # Operational outcome only — A/B research appendix removed from GUI
+        # --- END MODIFICATION ---
+        ops_box = QGroupBox("Operational outcome (for business stakeholders)")
+        ops_box.setStyleSheet(
+            f"QGroupBox {{ color: {Colors.TEXT_PRIMARY}; font-weight: bold; "
+            f"border: 1px solid {Colors.BORDER}; border-radius: 8px; margin-top: 12px; "
+            f"padding-top: 12px; background-color: {Colors.BG_CARD}; }}"
+            f"QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 6px; }}"
         )
-        layout.addWidget(comp_header)
+        ops_layout = QVBoxLayout(ops_box)
+        ops_layout.setSpacing(Spacing.MD)
 
-        self._comp_table = QTableWidget()
-        self._comp_table.setColumnCount(3)
-        self._comp_table.setHorizontalHeaderLabels(["Metric", "AI", "Human"])
-        self._comp_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self._comp_table.verticalHeader().setVisible(False)
-        self._comp_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self._comp_table.setStyleSheet(
-            f"QTableWidget {{ background-color: {Colors.BG_CARD}; border: 1px solid {Colors.BORDER}; "
-            f"gridline-color: {Colors.BORDER}; }}"
-            f"QTableWidget::item {{ padding: 6px; }}"
-            f"QHeaderView::section {{ background-color: {Colors.BG_SECONDARY}; "
-            f"color: {Colors.TEXT_SECONDARY}; border: none; "
-            f"border-bottom: 1px solid {Colors.BORDER}; padding: 6px; font-weight: bold; }}"
+        status_row = QHBoxLayout()
+        self._ops_status = QLabel("No result yet")
+        self._ops_status.setStyleSheet(
+            f"color: {Colors.TEXT_SECONDARY}; font-size: {Fonts.SIZE_TITLE}px; font-weight: bold;"
         )
-        layout.addWidget(self._comp_table)
-
-        # Controls
-        controls = QHBoxLayout()
-        refresh_btn = QPushButton("Refresh KPIs")
-        refresh_btn.setStyleSheet(
+        status_row.addWidget(self._ops_status)
+        status_row.addStretch()
+        refresh_ops = QPushButton("Refresh outcome")
+        refresh_ops.setStyleSheet(
             f"QPushButton {{ background-color: {Colors.ACCENT}; color: white; "
-            f"border: none; border-radius: 6px; padding: 8px 20px; font-weight: bold; }}"
+            f"border: none; border-radius: 6px; padding: 8px 16px; font-weight: bold; }}"
             f"QPushButton:hover {{ background-color: {Colors.ACCENT_HOVER}; }}"
         )
-        refresh_btn.clicked.connect(self._refresh)
-        controls.addWidget(refresh_btn)
+        refresh_ops.clicked.connect(self._refresh_operational)
+        status_row.addWidget(refresh_ops)
+        ops_layout.addLayout(status_row)
 
-        export_btn = QPushButton("Export JSON")
-        export_btn.setStyleSheet(
-            f"QPushButton {{ background: transparent; color: {Colors.ACCENT}; "
-            f"border: 1px solid {Colors.ACCENT}; border-radius: 6px; padding: 8px 20px; }}"
+        self._ops_headline = QLabel("")
+        self._ops_headline.setWordWrap(True)
+        self._ops_headline.setStyleSheet(
+            f"color: {Colors.TEXT_PRIMARY}; font-size: {Fonts.SIZE_LARGE}px;"
         )
-        export_btn.clicked.connect(self._export)
-        controls.addWidget(export_btn)
-        controls.addStretch()
-        layout.addLayout(controls)
+        ops_layout.addWidget(self._ops_headline)
 
+        claim_lbl = QLabel("What we claimed")
+        claim_lbl.setStyleSheet(f"color: {Colors.TEXT_SECONDARY}; font-weight: bold;")
+        ops_layout.addWidget(claim_lbl)
+        self._ops_claim = QTextEdit()
+        self._ops_claim.setReadOnly(True)
+        self._ops_claim.setMaximumHeight(80)
+        self._ops_claim.setStyleSheet(
+            f"QTextEdit {{ background: {Colors.BG_SECONDARY}; color: {Colors.TEXT_PRIMARY}; "
+            f"border: 1px solid {Colors.BORDER}; border-radius: 6px; padding: 8px; }}"
+        )
+        ops_layout.addWidget(self._ops_claim)
+
+        why_lbl = QLabel("Plain-language summary")
+        why_lbl.setStyleSheet(f"color: {Colors.TEXT_SECONDARY}; font-weight: bold;")
+        ops_layout.addWidget(why_lbl)
+        self._ops_rationale = QTextEdit()
+        self._ops_rationale.setReadOnly(True)
+        self._ops_rationale.setMaximumHeight(100)
+        self._ops_rationale.setStyleSheet(
+            f"QTextEdit {{ background: {Colors.BG_SECONDARY}; color: {Colors.TEXT_PRIMARY}; "
+            f"border: 1px solid {Colors.BORDER}; border-radius: 6px; padding: 8px; }}"
+        )
+        ops_layout.addWidget(self._ops_rationale)
+
+        improve_lbl = QLabel("Where to improve")
+        improve_lbl.setStyleSheet(f"color: {Colors.TEXT_SECONDARY}; font-weight: bold;")
+        ops_layout.addWidget(improve_lbl)
+        self._ops_improve = QTextEdit()
+        self._ops_improve.setReadOnly(True)
+        self._ops_improve.setMinimumHeight(100)
+        self._ops_improve.setStyleSheet(
+            f"QTextEdit {{ background: {Colors.BG_SECONDARY}; color: {Colors.TEXT_PRIMARY}; "
+            f"border: 1px solid {Colors.BORDER}; border-radius: 6px; padding: 8px; }}"
+        )
+        ops_layout.addWidget(self._ops_improve)
+
+        self._ops_meta = QLabel("")
+        self._ops_meta.setStyleSheet(
+            f"color: {Colors.TEXT_SECONDARY}; font-size: {Fonts.SIZE_SMALL}px;"
+        )
+        self._ops_meta.setWordWrap(True)
+        ops_layout.addWidget(self._ops_meta)
+
+        layout.addWidget(ops_box)
+
+        cli_hint = QLabel(
+            "Thesis A/B authoring KPIs: use CLI  chaosgen evaluate --ab  "
+            "(not shown here — keeps this screen operational)."
+        )
+        cli_hint.setWordWrap(True)
+        cli_hint.setStyleSheet(
+            f"color: {Colors.TEXT_MUTED}; font-size: {Fonts.SIZE_SMALL}px;"
+        )
+        layout.addWidget(cli_hint)
         layout.addStretch()
         scroll.setWidget(container)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
 
-    def _refresh(self):
-        kpis = self._kpi_tracker.compute_all_kpis()
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._refresh_operational()
 
-        ai = kpis.get("ai", {})
-        human = kpis.get("human", {})
+    def _refresh_operational(self):
+        """Load last ExpectationVerdictReport into stakeholder language."""
+        try:
+            from chaosgen.advisor.report_store import load_verdict_report
 
-        self._actionability_card.set_value(f"{ai.get('actionability_rate', 0):.1f}%")
-        self._discovery_card.set_value(f"{ai.get('discovery_rate', 0):.2f}")
-        self._time_card.set_value(f"{ai.get('time_to_design_minutes', 0):.1f}m")
-        self._total_card.set_value(str(ai.get("total_experiments", 0)))
+            report = load_verdict_report()
+        except FileNotFoundError:
+            self._ops_status.setText("No chaos outcome yet")
+            self._ops_status.setStyleSheet(
+                f"color: {Colors.TEXT_SECONDARY}; font-size: {Fonts.SIZE_TITLE}px; font-weight: bold;"
+            )
+            self._ops_headline.setText(
+                "Run a chaos experiment with expectations (or chaosgen verdict), "
+                "then refresh this panel."
+            )
+            self._ops_claim.setPlainText("")
+            self._ops_rationale.setPlainText("")
+            self._ops_improve.setPlainText(
+                "Tip for demos: use examples/demo-expectation-criteria.yaml, "
+                "then open Evaluation after the run."
+            )
+            self._ops_meta.setText("")
+            return
+        except Exception as exc:
+            self._ops_status.setText("Could not load outcome")
+            self._ops_headline.setText(str(exc))
+            return
 
-        metrics = [
-            ("Actionability Rate", f"{ai.get('actionability_rate', 0):.1f}%", f"{human.get('actionability_rate', 0):.1f}%"),
-            ("Discovery Rate", f"{ai.get('discovery_rate', 0):.2f}", f"{human.get('discovery_rate', 0):.2f}"),
-            ("Time to Design", f"{ai.get('time_to_design_minutes', 0):.1f}m", f"{human.get('time_to_design_minutes', 0):.1f}m"),
-            ("Total Experiments", str(ai.get("total_experiments", 0)), str(human.get("total_experiments", 0))),
-        ]
+        color = {
+            ExperimentVerdict.PASS: Colors.SUCCESS,
+            ExperimentVerdict.PARTIAL: Colors.WARNING,
+            ExperimentVerdict.FAIL: Colors.DANGER,
+        }.get(report.verdict, Colors.TEXT_PRIMARY)
 
-        self._comp_table.setRowCount(len(metrics))
-        for i, (name, ai_val, human_val) in enumerate(metrics):
-            self._comp_table.setItem(i, 0, QTableWidgetItem(name))
-            self._comp_table.setItem(i, 1, QTableWidgetItem(ai_val))
-            self._comp_table.setItem(i, 2, QTableWidgetItem(human_val))
-
-    def _export(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Export KPI Report", "kpi_report.json", "JSON (*.json)")
-        if path:
-            try:
-                self._kpi_tracker.export_report(path, format="json")
-                QMessageBox.information(self, "Export", f"Report exported to {path}")
-            except Exception as e:
-                QMessageBox.critical(self, "Export Error", str(e))
+        self._ops_status.setText(report.stakeholder_status_label())
+        self._ops_status.setStyleSheet(
+            f"color: {color}; font-size: {Fonts.SIZE_TITLE}px; font-weight: bold;"
+        )
+        self._ops_headline.setText(report.stakeholder_headline())
+        self._ops_claim.setPlainText(report.claim.strip())
+        self._ops_rationale.setPlainText(report.rationale.strip())
+        bullets = report.improvement_notes()
+        self._ops_improve.setPlainText("\n".join(f"• {b}" for b in bullets))
+        meta_bits = []
+        if report.experiment_name:
+            meta_bits.append(f"Experiment: {report.experiment_name}")
+        if report.evaluated_at:
+            meta_bits.append(f"Evaluated: {report.evaluated_at}")
+        failed = sum(1 for c in report.checks if not c.passed)
+        meta_bits.append(f"Checks: {len(report.checks) - failed} ok / {failed} missed")
+        self._ops_meta.setText("  ·  ".join(meta_bits))

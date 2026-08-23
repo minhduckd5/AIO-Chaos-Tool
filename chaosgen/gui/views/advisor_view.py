@@ -6,14 +6,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Slot
-from PySide6.QtGui import QColor, QShowEvent, QPixmap
+from PySide6.QtCore import Qt, Slot, QTimer, QSettings
+from PySide6.QtGui import QColor, QShowEvent, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
     QLineEdit, QSpinBox, QDoubleSpinBox, QSlider, QPushButton, QStackedWidget,
     QTableWidget, QTableWidgetItem, QHeaderView, QTextEdit,
     QSplitter, QMessageBox, QFileDialog, QRadioButton,
-    QButtonGroup, QCheckBox, QComboBox, QTabWidget,
+    QButtonGroup, QCheckBox, QComboBox, QTabWidget, QSizePolicy,
     QDialog, QDialogButtonBox, QPlainTextEdit, QScrollArea,
 )
 
@@ -41,11 +41,22 @@ _VERDICT_COLORS = {
 }
 
 _EMPTY_SCENARIOS_MSG = (
-    "No scenarios generated — see Gatekeeper / Descriptions "
+    "No scenarios generated — see Triage (Gatekeeper / Descriptions) "
     "(fallback incidents are not fed to chaos generation)."
 )
 
 _DEFAULT_EXPORT = Path(r"H:\Project\microservices-demo-1\local\observability-fetch\exports")
+_COMPOSITE_WIDTH_BREAKPOINT = 1100
+_SETTINGS_ORG = "ChaosGen"
+_SETTINGS_APP = "AdvisorView"
+
+
+def _shorten_feature(name: str, max_len: int = 42) -> str:
+    """Layer-1 signal label; full PromQL stays in the detail pane."""
+    if len(name) <= max_len:
+        return name
+    # Prefer a readable tail (metric/label fragment) over head truncation.
+    return "…" + name[-(max_len - 1) :]
 
 
 class AdvisorView(QWidget):
@@ -57,6 +68,12 @@ class AdvisorView(QWidget):
         self._current_report: AdvisorReport | None = None
         self._current_result: AnalysisResult | None = None
         self._current_descriptions: list[UnknownScenarioDescription] = []
+        self._syncing_selection = False
+        self._composite_narrow: bool | None = None
+        self._resize_layout_timer = QTimer(self)
+        self._resize_layout_timer.setSingleShot(True)
+        self._resize_layout_timer.setInterval(120)
+        self._resize_layout_timer.timeout.connect(self._apply_composite_layout)
         self._init_ui()
         self._connect_signals()
         self._load_defaults()
@@ -374,6 +391,9 @@ class AdvisorView(QWidget):
         self._stack.addWidget(step2)
 
         # --- Step 3 ---
+        # --- START MODIFICATION ---
+        # Union peer tabs into Evidence / Triage / Scenarios composites
+        # --- END MODIFICATION ---
         step3 = QWidget()
         s3 = QVBoxLayout(step3)
         self._summary_label = QLabel()
@@ -381,9 +401,10 @@ class AdvisorView(QWidget):
         self._summary_label.setStyleSheet(f"color: {Colors.TEXT_PRIMARY};")
         s3.addWidget(self._summary_label)
 
-        splitter = QSplitter(Qt.Vertical)
+        self._outer_splitter = QSplitter(Qt.Vertical)
         self._tabs = QTabWidget()
 
+        # --- Evidence = Anomalies + Timeline ---
         self._anomaly_table = QTableWidget()
         self._anomaly_table.setColumnCount(4)
         self._anomaly_table.setHorizontalHeaderLabels(
@@ -391,13 +412,36 @@ class AdvisorView(QWidget):
         )
         self._anomaly_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self._anomaly_table.verticalHeader().setVisible(False)
+        self._anomaly_table.setMinimumHeight(160)
+        self._anomaly_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._style_table(self._anomaly_table)
-        self._tabs.addTab(self._anomaly_table, "Anomalies")
 
         self._timeline_widget = InteractiveTimelineWidget(self)
-        self._tabs.addTab(self._timeline_widget, "Timeline")
+        self._timeline_widget.setMinimumHeight(140)
+        self._timeline_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
-        # --- Gatekeeper tab (P1) ---
+        evidence_page = QWidget()
+        evidence_layout = QVBoxLayout(evidence_page)
+        evidence_layout.setContentsMargins(0, 0, 0, 0)
+        evidence_layout.setSpacing(Spacing.SM)
+        evidence_toolbar = QHBoxLayout()
+        evidence_toolbar.addWidget(QLabel("Evidence — anomalies + timeline"))
+        evidence_toolbar.addStretch()
+        self._toggle_timeline_btn = QPushButton("Hide timeline")
+        self._toggle_timeline_btn.setFlat(True)
+        self._toggle_timeline_btn.clicked.connect(self._toggle_timeline_pane)
+        evidence_toolbar.addWidget(self._toggle_timeline_btn)
+        evidence_layout.addLayout(evidence_toolbar)
+        self._evidence_splitter = QSplitter(Qt.Vertical)
+        self._evidence_splitter.setChildrenCollapsible(True)
+        self._evidence_splitter.addWidget(self._anomaly_table)
+        self._evidence_splitter.addWidget(self._timeline_widget)
+        self._evidence_splitter.setStretchFactor(0, 2)
+        self._evidence_splitter.setStretchFactor(1, 1)
+        evidence_layout.addWidget(self._evidence_splitter)
+        self._tabs.addTab(evidence_page, "Evidence")
+
+        # --- Triage = Gatekeeper + Descriptions ---
         self._gatekeeper_table = QTableWidget()
         self._gatekeeper_table.setColumnCount(8)
         self._gatekeeper_table.setHorizontalHeaderLabels(
@@ -405,12 +449,15 @@ class AdvisorView(QWidget):
         )
         self._gatekeeper_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
         self._gatekeeper_table.verticalHeader().setVisible(False)
+        self._gatekeeper_table.setMinimumWidth(280)
+        self._gatekeeper_table.setMinimumHeight(160)
+        self._gatekeeper_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._style_table(self._gatekeeper_table)
         self._gatekeeper_table.currentCellChanged.connect(self._on_gatekeeper_selected)
-        self._tabs.addTab(self._gatekeeper_table, "Gatekeeper")
 
-        # --- Descriptions tab (P2) ---
         descriptions_panel = QWidget()
+        descriptions_panel.setMinimumWidth(280)
+        descriptions_panel.setMinimumHeight(160)
         desc_layout = QVBoxLayout(descriptions_panel)
         desc_layout.setContentsMargins(0, 0, 0, 0)
         desc_toolbar = QHBoxLayout()
@@ -441,8 +488,29 @@ class AdvisorView(QWidget):
         self._style_table(self._descriptions_table)
         self._descriptions_table.currentCellChanged.connect(self._on_description_selected)
         desc_layout.addWidget(self._descriptions_table)
-        self._tabs.addTab(descriptions_panel, "Descriptions")
 
+        triage_page = QWidget()
+        triage_layout = QVBoxLayout(triage_page)
+        triage_layout.setContentsMargins(0, 0, 0, 0)
+        triage_layout.setSpacing(Spacing.SM)
+        triage_toolbar = QHBoxLayout()
+        triage_toolbar.addWidget(QLabel("Triage — gatekeeper + descriptions"))
+        triage_toolbar.addStretch()
+        self._toggle_descriptions_btn = QPushButton("Hide descriptions")
+        self._toggle_descriptions_btn.setFlat(True)
+        self._toggle_descriptions_btn.clicked.connect(self._toggle_descriptions_pane)
+        triage_toolbar.addWidget(self._toggle_descriptions_btn)
+        triage_layout.addLayout(triage_toolbar)
+        self._triage_splitter = QSplitter(Qt.Horizontal)
+        self._triage_splitter.setChildrenCollapsible(True)
+        self._triage_splitter.addWidget(self._gatekeeper_table)
+        self._triage_splitter.addWidget(descriptions_panel)
+        self._triage_splitter.setStretchFactor(0, 1)
+        self._triage_splitter.setStretchFactor(1, 1)
+        triage_layout.addWidget(self._triage_splitter)
+        self._tabs.addTab(triage_page, "Triage")
+
+        # --- Scenarios ---
         self._results_table = QTableWidget()
         self._results_table.setColumnCount(4)
         self._results_table.setHorizontalHeaderLabels(["Scenario", "SCI", "Confidence", "Action"])
@@ -453,19 +521,21 @@ class AdvisorView(QWidget):
         self._scenario_tab_index = self._tabs.addTab(self._results_table, "Scenarios")
         self._tabs.currentChanged.connect(self._on_tab_changed)
 
-        splitter.addWidget(self._tabs)
+        self._outer_splitter.addWidget(self._tabs)
 
         self._detail_text = QTextEdit()
         self._detail_text.setReadOnly(True)
+        self._detail_text.setMinimumHeight(100)
         self._detail_text.setStyleSheet(
             f"background-color: {Colors.BG_INPUT}; color: {Colors.TEXT_PRIMARY}; "
             f"font-family: {Fonts.FAMILY_MONO}; font-size: {Fonts.SIZE_SMALL}px; "
             f"border: 1px solid {Colors.BORDER}; padding: {Spacing.SM}px;"
         )
-        splitter.addWidget(self._detail_text)
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 1)
-        s3.addWidget(splitter)
+        self._outer_splitter.addWidget(self._detail_text)
+        self._outer_splitter.setStretchFactor(0, 2)
+        self._outer_splitter.setStretchFactor(1, 1)
+        self._outer_splitter.setChildrenCollapsible(True)
+        s3.addWidget(self._outer_splitter)
 
         controls = QHBoxLayout()
         self._export_btn = QPushButton("Export report…")
@@ -486,6 +556,8 @@ class AdvisorView(QWidget):
         self._stack.addWidget(step3)
 
         layout.addWidget(self._stack)
+        self._restore_splitter_sizes()
+        QTimer.singleShot(0, self._apply_composite_layout)
 
     def _style_table(self, table: QTableWidget):
         table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -769,11 +841,24 @@ class AdvisorView(QWidget):
         self._step_label.setText("Step 3 of 3 — Review results")
 
         if result:
+            window_txt = ""
+            if result.window_start and result.window_end:
+                window_txt = (
+                    f"Window: {result.window_start.strftime('%Y-%m-%d %H:%M')} → "
+                    f"{result.window_end.strftime('%Y-%m-%d %H:%M')} UTC "
+                    f"({result.lookback_hours:.1f}h)  |  "
+                )
+            clusters_txt = (
+                f"Clusters: {len(result.clusters)}"
+                + (f" ({result.clustering_label})" if result.clustering_label else "")
+            )
             self._summary_label.setText(
+                f"{window_txt}"
                 f"Source: {result.source_label}  |  "
                 f"Series: {result.metric_series}  |  "
                 f"Samples: {result.total_samples}  |  "
                 f"Feature windows: {result.feature_rows}  |  "
+                f"{clusters_txt}  |  "
                 f"{gatekeeper_summary(report)}"
             )
             self._fill_anomaly_table(result.summaries)
@@ -827,7 +912,10 @@ class AdvisorView(QWidget):
     def _fill_anomaly_table(self, summaries):
         self._anomaly_table.setRowCount(len(summaries))
         for i, s in enumerate(summaries):
-            feats = ", ".join(f"{n} ({v:.2f})" for n, v in s.top_features[:3])
+            # MODIFIED: Layer-1 short labels; full names in detail pane
+            feats = ", ".join(
+                f"{_shorten_feature(n)} ({v:.2f})" for n, v in s.top_features[:2]
+            )
             self._anomaly_table.setItem(i, 0, QTableWidgetItem(s.service_name))
             self._anomaly_table.setItem(i, 1, QTableWidgetItem(f"{s.severity:.2f}"))
             self._anomaly_table.setItem(i, 2, QTableWidgetItem(feats))
@@ -881,7 +969,7 @@ class AdvisorView(QWidget):
                 self._gatekeeper_table.setItem(i, col, item)
 
     def _on_gatekeeper_selected(self, row, _col, _prev_row, _prev_col):
-        if not self._current_report or row < 0:
+        if self._syncing_selection or not self._current_report or row < 0:
             return
         rows = gatekeeper_rows(self._current_report)
         if row >= len(rows):
@@ -909,6 +997,8 @@ class AdvisorView(QWidget):
                 f"  {linked.root_cause_hypothesis}",
             ]
         self._detail_text.setPlainText("\n".join(lines))
+        self._sync_select_description(data["cluster"])
+        self._sync_select_anomaly_by_cluster(data["cluster"])
 
     def _fill_descriptions_table(self):
         if not self._current_report:
@@ -939,6 +1029,8 @@ class AdvisorView(QWidget):
         return self._current_descriptions[row]
 
     def _on_description_selected(self, row, _col, _prev_row, _prev_col):
+        if self._syncing_selection:
+            return
         desc = self._selected_description()
         if not desc:
             self._promote_btn.setEnabled(False)
@@ -964,6 +1056,9 @@ class AdvisorView(QWidget):
         if block:
             lines += ["", f"[Promote disabled] {block}"]
         self._detail_text.setPlainText("\n".join(lines))
+        cluster = str(desc.source_incident_id)
+        self._sync_select_gatekeeper(cluster)
+        self._sync_select_anomaly_by_cluster(cluster)
 
     def _on_promote_clicked(self):
         desc = self._selected_description()
@@ -1032,7 +1127,7 @@ class AdvisorView(QWidget):
         QMessageBox.critical(self, "Analysis error", error_msg)
 
     def _on_anomaly_selected(self, row, _col, _prev_row, _prev_col):
-        if not self._current_result or row < 0:
+        if self._syncing_selection or not self._current_result or row < 0:
             return
         summaries = self._current_result.summaries
         if row >= len(summaries):
@@ -1051,6 +1146,118 @@ class AdvisorView(QWidget):
         if s.error_pattern:
             lines.append(f"\nError pattern: {s.error_pattern}")
         self._detail_text.setPlainText("\n".join(lines))
+        if s.source_cluster_id is not None:
+            cluster = str(s.source_cluster_id)
+            self._sync_select_gatekeeper(cluster)
+            self._sync_select_description(cluster)
+
+    def _sync_select_gatekeeper(self, cluster: str) -> None:
+        if not self._current_report:
+            return
+        rows = gatekeeper_rows(self._current_report)
+        for i, row in enumerate(rows):
+            if row["cluster"] == cluster:
+                self._syncing_selection = True
+                try:
+                    self._gatekeeper_table.selectRow(i)
+                finally:
+                    self._syncing_selection = False
+                return
+
+    def _sync_select_description(self, cluster: str) -> None:
+        for i, desc in enumerate(self._current_descriptions):
+            if str(desc.source_incident_id) == cluster:
+                self._syncing_selection = True
+                try:
+                    self._descriptions_table.selectRow(i)
+                    block = promote_blocked_reason(desc)
+                    self._promote_btn.setEnabled(block is None)
+                    self._promote_btn.setToolTip(block or "Promote this described incident to the catalog")
+                finally:
+                    self._syncing_selection = False
+                return
+
+    def _sync_select_anomaly_by_cluster(self, cluster: str) -> None:
+        if not self._current_result:
+            return
+        for i, s in enumerate(self._current_result.summaries):
+            if s.source_cluster_id is not None and str(s.source_cluster_id) == cluster:
+                self._syncing_selection = True
+                try:
+                    self._anomaly_table.selectRow(i)
+                finally:
+                    self._syncing_selection = False
+                return
+
+    def resizeEvent(self, event: QResizeEvent):
+        super().resizeEvent(event)
+        self._resize_layout_timer.start()
+
+    def hideEvent(self, event):
+        self._persist_splitter_sizes()
+        super().hideEvent(event)
+
+    def _settings(self) -> QSettings:
+        return QSettings(_SETTINGS_ORG, _SETTINGS_APP)
+
+    def _persist_splitter_sizes(self) -> None:
+        s = self._settings()
+        s.setValue("evidence_sizes", self._evidence_splitter.sizes())
+        s.setValue("triage_sizes", self._triage_splitter.sizes())
+        s.setValue("outer_sizes", self._outer_splitter.sizes())
+
+    def _restore_splitter_sizes(self) -> None:
+        s = self._settings()
+        for key, splitter in (
+            ("evidence_sizes", self._evidence_splitter),
+            ("triage_sizes", self._triage_splitter),
+            ("outer_sizes", self._outer_splitter),
+        ):
+            sizes = s.value(key)
+            if isinstance(sizes, list) and sizes and all(int(x) > 0 for x in sizes):
+                splitter.setSizes([int(x) for x in sizes])
+
+    def _apply_composite_layout(self) -> None:
+        """Orientation switch for laptop/demo widths — one axis per composite."""
+        width = self._tabs.width() if self._tabs.width() > 0 else self.width()
+        narrow = width < _COMPOSITE_WIDTH_BREAKPOINT
+        if self._composite_narrow is not None and narrow == self._composite_narrow:
+            return
+        self._composite_narrow = narrow
+        # Evidence: always vertical (table above timeline)
+        if self._evidence_splitter.orientation() != Qt.Vertical:
+            self._evidence_splitter.setOrientation(Qt.Vertical)
+            self._evidence_splitter.setStretchFactor(0, 2)
+            self._evidence_splitter.setStretchFactor(1, 1)
+        # Triage: horizontal when wide, vertical when narrow
+        desired = Qt.Vertical if narrow else Qt.Horizontal
+        if self._triage_splitter.orientation() != desired:
+            self._triage_splitter.setOrientation(desired)
+            if narrow:
+                self._triage_splitter.setStretchFactor(0, 3)
+                self._triage_splitter.setStretchFactor(1, 2)
+            else:
+                self._triage_splitter.setStretchFactor(0, 1)
+                self._triage_splitter.setStretchFactor(1, 1)
+        # Very small shell: collapse secondary panes by default once
+        if width <= 1000 and self._timeline_widget.isVisible():
+            self._timeline_widget.setVisible(False)
+            self._toggle_timeline_btn.setText("Show timeline")
+
+    def _toggle_timeline_pane(self) -> None:
+        visible = self._timeline_widget.isVisible()
+        self._timeline_widget.setVisible(not visible)
+        self._toggle_timeline_btn.setText("Show timeline" if visible else "Hide timeline")
+
+    def _toggle_descriptions_pane(self) -> None:
+        pane = self._descriptions_table.parentWidget()
+        if pane is None:
+            return
+        visible = pane.isVisible()
+        pane.setVisible(not visible)
+        self._toggle_descriptions_btn.setText(
+            "Show descriptions" if visible else "Hide descriptions"
+        )
 
     def _on_tab_changed(self, index: int):
         if index != self._scenario_tab_index or not self._current_report:

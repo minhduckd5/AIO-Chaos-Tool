@@ -36,6 +36,13 @@ class ModulesView(QWidget):
         subtitle.setObjectName("sectionSubtitle")
         layout.addWidget(subtitle)
 
+        hint = QLabel(
+            "Inventory of injectors — use Experiments to run, Evaluation to review outcomes."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {Colors.TEXT_SECONDARY}; font-size: {Fonts.SIZE_SMALL}px;")
+        layout.addWidget(hint)
+
         splitter = QSplitter(Qt.Vertical)
 
         # Table

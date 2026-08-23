@@ -109,14 +109,7 @@ class SettingsView(QWidget):
 
         root.addWidget(hints_group)
 
-        # --- Developer Settings ---
-        dev_group = QGroupBox("Developer Options")
-        dev_form = QFormLayout(dev_group)
-        self._developer_mode_cb = QCheckBox("Enable Advanced/Developer Tuning Mode")
-        dev_form.addRow(self._developer_mode_cb)
-        root.addWidget(dev_group)
-
-        # --- Local Ollama ---
+        # --- Essentials: Ollama + observability ---
         ollama_group = QGroupBox("Local Ollama (default - no API key required)")
         ollama_form = QFormLayout(ollama_group)
         self._ollama_url = QLineEdit()
@@ -124,7 +117,38 @@ class SettingsView(QWidget):
         ollama_form.addRow("Ollama URL:", self._ollama_url)
         root.addWidget(ollama_group)
 
-        # --- Cloud LLM providers ---
+        obs_group = QGroupBox("Observability Auth (for tools behind auth)")
+        obs_form = QFormLayout(obs_group)
+
+        self._prom_token_row, self._prom_token, self._prom_token_status = self._make_secret_field_row()
+        obs_form.addRow("Prometheus Token:", self._prom_token_row)
+
+        self._loki_token_row, self._loki_token, self._loki_token_status = self._make_secret_field_row()
+        obs_form.addRow("Loki Token:", self._loki_token_row)
+
+        self._grafana_pw_row, self._grafana_pw, self._grafana_pw_status = self._make_secret_field_row()
+        obs_form.addRow("Grafana Password:", self._grafana_pw_row)
+
+        root.addWidget(obs_group)
+
+        # --- START MODIFICATION ---
+        # Advanced disclosure: cloud keys + developer mode
+        # --- END MODIFICATION ---
+        self._advanced_toggle = QCheckBox("Show advanced settings (cloud LLM keys, developer mode)")
+        self._advanced_toggle.setStyleSheet(f"color: {Colors.TEXT_SECONDARY};")
+        root.addWidget(self._advanced_toggle)
+
+        self._advanced_container = QWidget()
+        advanced_layout = QVBoxLayout(self._advanced_container)
+        advanced_layout.setContentsMargins(0, 0, 0, 0)
+        advanced_layout.setSpacing(16)
+
+        dev_group = QGroupBox("Developer Options")
+        dev_form = QFormLayout(dev_group)
+        self._developer_mode_cb = QCheckBox("Enable Advanced/Developer Tuning Mode")
+        dev_form.addRow(self._developer_mode_cb)
+        advanced_layout.addWidget(dev_group)
+
         cloud_group = QGroupBox("Cloud LLM Providers")
         cloud_layout = QVBoxLayout(cloud_group)
         cloud_hint = QLabel(
@@ -153,22 +177,10 @@ class SettingsView(QWidget):
         self._groq_key_row, self._groq_key, self._groq_key_status = self._make_secret_field_row()
         cloud_form.addRow("Groq API Key:", self._groq_key_row)
 
-        root.addWidget(cloud_group)
-
-        # --- Observability Auth ---
-        obs_group = QGroupBox("Observability Auth (for tools behind auth)")
-        obs_form = QFormLayout(obs_group)
-
-        self._prom_token_row, self._prom_token, self._prom_token_status = self._make_secret_field_row()
-        obs_form.addRow("Prometheus Token:", self._prom_token_row)
-
-        self._loki_token_row, self._loki_token, self._loki_token_status = self._make_secret_field_row()
-        obs_form.addRow("Loki Token:", self._loki_token_row)
-
-        self._grafana_pw_row, self._grafana_pw, self._grafana_pw_status = self._make_secret_field_row()
-        obs_form.addRow("Grafana Password:", self._grafana_pw_row)
-
-        root.addWidget(obs_group)
+        advanced_layout.addWidget(cloud_group)
+        self._advanced_container.setVisible(False)
+        self._advanced_toggle.toggled.connect(self._advanced_container.setVisible)
+        root.addWidget(self._advanced_container)
 
         # --- Save / clear buttons ---
         btn_row = QHBoxLayout()

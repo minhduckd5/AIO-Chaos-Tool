@@ -1,6 +1,5 @@
 """
-Experiments view -- experiment list + creation form.
-Phase 5 placeholder with functional form wired through AppController.
+Experiments view -- experiment list + creation form + lifecycle safety strip.
 """
 
 from PySide6.QtCore import Qt, Signal, Slot
@@ -17,13 +16,24 @@ from chaosgen.schemas.faults import (
     NetworkFaultSpec, ProcessFaultSpec, ResourceFaultSpec, FaultSpec,
 )
 
+_ACTIVE_STATES = {
+    "pending_approval",
+    "steady_state_check",
+    "injecting",
+    "verifying",
+    "rollback",
+}
+
 
 class ExperimentsView(QWidget):
     """Split view: experiment history list (left) + creation form (right)."""
 
+    navigate_requested = Signal(str)  # evaluation | advisor
+
     def __init__(self, controller, parent=None):
         super().__init__(parent)
         self._controller = controller
+        self._lifecycle_phase = "Pending"
         self._init_ui()
         self._connect_signals()
 
@@ -35,6 +45,56 @@ class ExperimentsView(QWidget):
         title = QLabel("Experiments")
         title.setObjectName("sectionTitle")
         layout.addWidget(title)
+
+        subtitle = QLabel(
+            "What is running / what do I run next? — inject → observe → finish"
+        )
+        subtitle.setObjectName("sectionSubtitle")
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
+
+        # --- START MODIFICATION ---
+        # Lifecycle strip + pinned Halt + Evaluation handoff
+        # --- END MODIFICATION ---
+        life = QHBoxLayout()
+        life.setSpacing(Spacing.MD)
+        self._phase_labels: dict[str, QLabel] = {}
+        for name in ("Pending", "Injecting", "Running", "Finished"):
+            lbl = QLabel(name)
+            lbl.setStyleSheet(
+                f"color: {Colors.TEXT_MUTED}; padding: 4px 10px; "
+                f"border: 1px solid {Colors.BORDER}; border-radius: 4px;"
+            )
+            self._phase_labels[name] = lbl
+            life.addWidget(lbl)
+        life.addStretch()
+
+        self._halt_btn = QPushButton("HALT / ABORT")
+        self._halt_btn.setEnabled(False)
+        self._halt_btn.setStyleSheet(
+            f"QPushButton {{ background-color: {Colors.DANGER}; color: white; "
+            f"border: none; border-radius: 6px; padding: 10px 20px; font-weight: bold; }}"
+            f"QPushButton:disabled {{ background-color: {Colors.BG_HOVER}; color: {Colors.TEXT_MUTED}; }}"
+        )
+        self._halt_btn.clicked.connect(self._on_halt)
+        life.addWidget(self._halt_btn)
+
+        self._open_eval_btn = QPushButton("Open Evaluation outcome")
+        self._open_eval_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {Colors.ACCENT}; "
+            f"border: 1px solid {Colors.ACCENT}; border-radius: 6px; padding: 10px 16px; }}"
+        )
+        self._open_eval_btn.clicked.connect(
+            lambda: self.navigate_requested.emit("evaluation")
+        )
+        life.addWidget(self._open_eval_btn)
+        layout.addLayout(life)
+
+        self._lifecycle_hint = QLabel("State: idle")
+        self._lifecycle_hint.setStyleSheet(
+            f"color: {Colors.TEXT_SECONDARY}; font-size: {Fonts.SIZE_SMALL}px;"
+        )
+        layout.addWidget(self._lifecycle_hint)
 
         splitter = QSplitter(Qt.Horizontal)
 
@@ -175,6 +235,8 @@ class ExperimentsView(QWidget):
         splitter.setStretchFactor(1, 3)
         layout.addWidget(splitter)
 
+        self._set_lifecycle_phase("Pending")
+
     def _make_card(self, title: str) -> QWidget:
         card = QWidget()
         card.setObjectName("cardWidget")
@@ -235,14 +297,69 @@ class ExperimentsView(QWidget):
             self._controller.run_experiment_async(experiment)
             self._history_list.insertItem(0, QListWidgetItem(f"[STARTED] {experiment.name}"))
             self._controller.log_message.emit(f"Experiment created: {experiment.name}")
+            self._set_lifecycle_phase("Injecting")
 
         except Exception as e:
             QMessageBox.critical(self, "Validation Error", str(e))
 
     def _connect_signals(self):
         self._controller.experiment_finished.connect(self._on_experiment_done)
+        self._controller.experiment_started.connect(self._on_experiment_started)
+        self._controller.state_changed.connect(self._on_state_changed)
+
+    def _set_lifecycle_phase(self, phase: str) -> None:
+        self._lifecycle_phase = phase
+        active = (
+            f"color: {Colors.TEXT_PRIMARY}; background-color: {Colors.BG_SELECTED}; "
+            f"padding: 4px 10px; border: 1px solid {Colors.ACCENT}; border-radius: 4px; "
+            f"font-weight: bold;"
+        )
+        idle = (
+            f"color: {Colors.TEXT_MUTED}; padding: 4px 10px; "
+            f"border: 1px solid {Colors.BORDER}; border-radius: 4px;"
+        )
+        for name, lbl in self._phase_labels.items():
+            lbl.setStyleSheet(active if name == phase else idle)
+
+    def _on_halt(self):
+        try:
+            self._controller.trigger_rollback()
+            self._controller.log_message.emit("HALT requested — triggering rollback")
+            self._history_list.insertItem(0, QListWidgetItem("[HALT] Rollback requested"))
+            self._set_lifecycle_phase("Finished")
+            self._halt_btn.setEnabled(False)
+        except Exception as exc:
+            QMessageBox.critical(self, "Halt failed", str(exc))
+
+    @Slot(str)
+    def _on_experiment_started(self, name: str):
+        self._set_lifecycle_phase("Running")
+        self._halt_btn.setEnabled(True)
+        self._lifecycle_hint.setText(f"Active: {name}")
+
+    @Slot(str)
+    def _on_state_changed(self, state: str):
+        self._lifecycle_hint.setText(f"State: {state}")
+        active = state.lower() in _ACTIVE_STATES
+        self._halt_btn.setEnabled(active)
+        mapping = {
+            "idle": "Pending",
+            "pending_approval": "Pending",
+            "steady_state_check": "Injecting",
+            "injecting": "Injecting",
+            "verifying": "Running",
+            "rollback": "Finished",
+        }
+        phase = mapping.get(state.lower())
+        if phase:
+            self._set_lifecycle_phase(phase)
 
     @Slot(bool, str)
     def _on_experiment_done(self, success, msg):
         status = "PASSED" if success else "FAILED"
         self._history_list.insertItem(0, QListWidgetItem(f"[{status}] {msg}"))
+        self._set_lifecycle_phase("Finished")
+        self._halt_btn.setEnabled(False)
+        self._lifecycle_hint.setText(
+            f"Finished ({status}). Open Evaluation outcome to review the claim."
+        )

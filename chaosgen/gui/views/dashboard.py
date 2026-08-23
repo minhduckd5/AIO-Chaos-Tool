@@ -1,15 +1,16 @@
 """
-Dashboard view -- overview cards, module health grid, recent history.
-Placeholder implementation for Phase 3 build-out.
+Dashboard view — Layer-1 health: what needs attention now?
 """
 
-from PySide6.QtCore import Qt, Slot, QTimer
+from __future__ import annotations
+
+from PySide6.QtCore import Qt, Slot, QTimer, Signal
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QSizePolicy, QScrollArea, QFrame,
 )
 
-from chaosgen.gui.theme import Colors, Fonts, Spacing, Radius
+from chaosgen.gui.theme import Colors, Fonts, Spacing
 from chaosgen.gui.widgets.status_dot import StatusDot
 
 
@@ -38,6 +39,9 @@ class SummaryCard(QWidget):
     def set_value(self, value: str):
         self._value_label.setText(value)
 
+    def set_color(self, color: str):
+        self._value_label.setStyleSheet(f"color: {color};")
+
 
 class ModuleHealthRow(QWidget):
     """Single row in the module health grid."""
@@ -58,7 +62,10 @@ class ModuleHealthRow(QWidget):
 
 
 class DashboardView(QWidget):
-    """Main dashboard with summary cards and module health overview."""
+    """Main dashboard: hero KPIs, next-action deep-links, module health."""
+
+    # Emitted with route keys: advisor | experiments | evaluation
+    navigate_requested = Signal(str)
 
     def __init__(self, controller, parent=None):
         super().__init__(parent)
@@ -81,32 +88,70 @@ class DashboardView(QWidget):
         layout.setContentsMargins(Spacing.XL, Spacing.XL, Spacing.XL, Spacing.XL)
         layout.setSpacing(Spacing.LG)
 
-        # Page header
         title = QLabel("Dashboard")
         title.setObjectName("sectionTitle")
         layout.addWidget(title)
 
         subtitle = QLabel(
-            "Microservices-focused pipeline — use Telemetry for live/export analysis"
+            "What needs attention now? — Advise → Run → Review"
         )
         subtitle.setObjectName("sectionSubtitle")
         layout.addWidget(subtitle)
 
-        # Summary cards row
         cards_layout = QHBoxLayout()
         cards_layout.setSpacing(Spacing.LG)
 
         self._state_card = SummaryCard("Orchestrator State", "IDLE", Colors.SUCCESS)
         self._modules_card = SummaryCard("Active Modules", "0", Colors.ACCENT)
-        self._experiments_card = SummaryCard("Experiments Run", "0", Colors.WARNING)
         self._pending_card = SummaryCard("Pending Approval", "0", Colors.DANGER)
+        self._verdict_card = SummaryCard("Last Outcome", "—", Colors.TEXT_SECONDARY)
 
-        for card in (self._state_card, self._modules_card, self._experiments_card, self._pending_card):
+        for card in (
+            self._state_card,
+            self._modules_card,
+            self._pending_card,
+            self._verdict_card,
+        ):
             cards_layout.addWidget(card)
 
         layout.addLayout(cards_layout)
 
-        # Module health section
+        # --- START MODIFICATION ---
+        # Next-action deep-links (one page = one decision)
+        # --- END MODIFICATION ---
+        actions_header = QLabel("Next actions")
+        actions_header.setStyleSheet(
+            f"color: {Colors.TEXT_PRIMARY}; font-size: {Fonts.SIZE_LARGE}px; "
+            f"font-weight: bold; margin-top: {Spacing.MD}px;"
+        )
+        layout.addWidget(actions_header)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(Spacing.MD)
+        btn_style = (
+            f"QPushButton {{ background-color: {Colors.ACCENT}; color: white; "
+            f"border: none; border-radius: 6px; padding: 10px 18px; font-weight: bold; }}"
+            f"QPushButton:hover {{ background-color: {Colors.ACCENT_HOVER}; }}"
+        )
+        secondary = (
+            f"QPushButton {{ background: transparent; color: {Colors.ACCENT}; "
+            f"border: 1px solid {Colors.ACCENT}; border-radius: 6px; padding: 10px 18px; }}"
+        )
+        open_telem = QPushButton("Open Telemetry")
+        open_telem.setStyleSheet(btn_style)
+        open_telem.clicked.connect(lambda: self.navigate_requested.emit("advisor"))
+        open_exp = QPushButton("Open Experiments")
+        open_exp.setStyleSheet(secondary)
+        open_exp.clicked.connect(lambda: self.navigate_requested.emit("experiments"))
+        open_eval = QPushButton("View Outcome")
+        open_eval.setStyleSheet(secondary)
+        open_eval.clicked.connect(lambda: self.navigate_requested.emit("evaluation"))
+        actions.addWidget(open_telem)
+        actions.addWidget(open_exp)
+        actions.addWidget(open_eval)
+        actions.addStretch()
+        layout.addLayout(actions)
+
         health_header = QLabel("Module Health")
         health_header.setStyleSheet(
             f"color: {Colors.TEXT_PRIMARY}; font-size: {Fonts.SIZE_LARGE}px; "
@@ -142,7 +187,26 @@ class DashboardView(QWidget):
         pending = self._controller.get_pending_experiments()
         self._pending_card.set_value(str(len(pending)))
 
+        self._refresh_verdict_card()
         self._rebuild_health_grid(modules)
+
+    def _refresh_verdict_card(self):
+        try:
+            from chaosgen.advisor.report_store import load_verdict_report
+            from chaosgen.schemas.scenarios import ExperimentVerdict
+
+            report = load_verdict_report()
+            label = report.stakeholder_status_label()
+            color = {
+                ExperimentVerdict.PASS: Colors.SUCCESS,
+                ExperimentVerdict.PARTIAL: Colors.WARNING,
+                ExperimentVerdict.FAIL: Colors.DANGER,
+            }.get(report.verdict, Colors.TEXT_SECONDARY)
+            self._verdict_card.set_value(label)
+            self._verdict_card.set_color(color)
+        except Exception:
+            self._verdict_card.set_value("—")
+            self._verdict_card.set_color(Colors.TEXT_SECONDARY)
 
     def _rebuild_health_grid(self, modules):
         while self._health_layout.count():
@@ -163,5 +227,4 @@ class DashboardView(QWidget):
 
     @Slot(dict)
     def _on_status_refreshed(self, data):
-        for name, status in data.items():
-            pass  # Phase 3: update individual module dots
+        pass

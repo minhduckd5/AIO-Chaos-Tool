@@ -184,7 +184,11 @@ class MainWindow(QWidget):
         return bar
 
     def _setup_navigation(self):
-        """Register views in the qfluentwidgets NavigationInterface."""
+        """Register views grouped Advise → Run → Review (+ Settings)."""
+        # --- START MODIFICATION ---
+        # Journey-based sidebar grouping
+        # --- END MODIFICATION ---
+        self._nav.addItemHeader("Advise")
         self._nav.addItem(
             routeKey="dashboard",
             icon=FluentIcon.HOME,
@@ -200,17 +204,20 @@ class MainWindow(QWidget):
                 onClick=lambda: self._switch_page(_PAGE_DISCOVERY, "System Discovery"),
             )
         self._nav.addItem(
-            routeKey="catalog",
-            icon=FluentIcon.LIBRARY,
-            text="Scenario Catalog",
-            onClick=lambda: self._switch_page(_PAGE_CATALOG, "Scenario Catalog"),
-        )
-        self._nav.addItem(
             routeKey="advisor",
             icon=FluentIcon.ROBOT,
             text="Telemetry",
             onClick=lambda: self._switch_page(_PAGE_ADVISOR, "Telemetry & Advisor"),
         )
+        self._nav.addItem(
+            routeKey="catalog",
+            icon=FluentIcon.LIBRARY,
+            text="Scenario Catalog",
+            onClick=lambda: self._switch_page(_PAGE_CATALOG, "Scenario Catalog"),
+        )
+
+        self._nav.addSeparator()
+        self._nav.addItemHeader("Run")
         self._nav.addItem(
             routeKey="experiments",
             icon=FluentIcon.PLAY,
@@ -223,13 +230,16 @@ class MainWindow(QWidget):
             text="Modules",
             onClick=lambda: self._switch_page(_PAGE_MODULES, "Modules"),
         )
+
+        self._nav.addSeparator()
+        self._nav.addItemHeader("Review")
         self._nav.addItem(
             routeKey="evaluation",
             icon=FluentIcon.PIE_SINGLE,
             text="Evaluation",
             onClick=lambda: self._switch_page(_PAGE_EVALUATION, "Evaluation"),
-            position=NavigationItemPosition.BOTTOM,
         )
+
         self._nav.addItem(
             routeKey="settings",
             icon=FluentIcon.SETTING,
@@ -238,8 +248,24 @@ class MainWindow(QWidget):
             position=NavigationItemPosition.BOTTOM,
         )
 
-        # Set default
         self._nav.setCurrentItem("dashboard")
+
+    def navigate_to(self, route_key: str):
+        """Deep-link helper for Dashboard / Experiments CTAs."""
+        mapping = {
+            "dashboard": (_PAGE_DASHBOARD, "Dashboard", "dashboard"),
+            "advisor": (_PAGE_ADVISOR, "Telemetry & Advisor", "advisor"),
+            "experiments": (_PAGE_EXPERIMENTS, "Experiments", "experiments"),
+            "modules": (_PAGE_MODULES, "Modules", "modules"),
+            "evaluation": (_PAGE_EVALUATION, "Evaluation", "evaluation"),
+            "catalog": (_PAGE_CATALOG, "Scenario Catalog", "catalog"),
+            "settings": (_PAGE_SETTINGS, "Settings", "settings"),
+        }
+        if route_key not in mapping:
+            return
+        index, title, nav_key = mapping[route_key]
+        self._switch_page(index, title)
+        self._nav.setCurrentItem(nav_key)
 
     def _switch_page(self, index: int, title: str):
         self._stack.setCurrentIndex(index)
@@ -247,6 +273,8 @@ class MainWindow(QWidget):
 
     def _connect_signals(self):
         self._settings_view.settings_saved.connect(self._advisor_view.refresh_credentials)
+        self._dashboard.navigate_requested.connect(self.navigate_to)
+        self._experiments_view.navigate_requested.connect(self.navigate_to)
         self.controller.log_message.connect(self._log_console.append_log)
         self.controller.state_changed.connect(self._update_state_bar)
         self.controller.experiment_started.connect(

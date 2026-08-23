@@ -4,6 +4,10 @@ GUI-facing telemetry analysis pipeline (live stack or offline export).
 
 from __future__ import annotations
 
+# --- START MODIFICATION ---
+# P7: honor absolute windows via collect_range; pass AnomalySettings into detector
+# --- END MODIFICATION ---
+
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -11,7 +15,6 @@ from chaosgen.advisor.context_builder import ContextBuilder
 from chaosgen.advisor.pipeline import run_advisor_pipeline
 from chaosgen.config.settings import load_settings
 from chaosgen.discovery import resolve_discovery_report
-from chaosgen.ingestion.analysis import analyze_dataset
 from chaosgen.ingestion.export_loader import ExportLoader
 from chaosgen.ingestion.telemetry_factory import (
     build_telemetry_collector,
@@ -23,6 +26,8 @@ from datetime import datetime
 from chaosgen.ingestion.window import resolve_collection_window
 from chaosgen.ml.feature_engineering import FeatureEngineer
 from chaosgen.ml.anomaly_detector import AnomalyDetector
+from chaosgen.ml.canonical_features import apply_canonical_features
+from chaosgen.ml.cluster_labels import ClusterLabelStore
 from chaosgen.schemas.scenarios import AdvisorReport, AnomalyCluster, AnomalySummary
 
 
@@ -52,6 +57,10 @@ class AnalysisResult:
     total_samples: int
     log_streams: int
     feature_rows: int
+    lookback_hours: float = 24.0
+    clustering_label: str = ""
+    window_start: datetime | None = None
+    window_end: datetime | None = None
     clusters: list[AnomalyCluster] = field(default_factory=list)
     summaries: list[AnomalySummary] = field(default_factory=list)
     report: AdvisorReport = field(default_factory=lambda: AdvisorReport(anomalies_found=0))
@@ -110,48 +119,73 @@ def run_gui_analysis_pipeline(
             end=request.end_datetime,
             settings=settings,
         )
-        source_label = f"Live ({window.lookback_hours:.1f}h window)"
         if progress_cb:
-            progress_cb(f"Collecting live telemetry from Prometheus / Loki ({window.lookback_hours:.1f}h window)...")
+            progress_cb(
+                f"Collecting live telemetry ({window.start.isoformat()} → "
+                f"{window.end.isoformat()}, {window.lookback_hours:.1f}h)..."
+            )
         collector = build_telemetry_collector(
+            settings=settings,
             loki_url=request.loki_url,
+            prom_url=request.prom_url,
         )
-        dataset = collector.collect_baseline(duration_hours=request.lookback_hours)
-        source_label = "live"
+        # MODIFIED: use collect_range so absolute GUI datetimes are honored
+        dataset = collector.collect_range(
+            start=window.start,
+            end=window.end,
+            step=settings.telemetry.step,
+        )
+        source_label = f"live ({window.lookback_hours:.1f}h)"
 
     fe = FeatureEngineer(settings=settings.features)
     features = fe.transform(dataset)
-    
-    if features.empty:
-        clusters, summaries = [], []
-        plot_path = None
-        feature_rows = 0
-        timeline_df = None
-    else:
-        detector = AnomalyDetector()
-        if request.model_path and os.path.exists(request.model_path):
-            detector.load_model(request.model_path)
+    features = apply_canonical_features(features, settings.features)
+
+    clustering_label = (
+        f"fixed-k={settings.anomaly.n_clusters}"
+        if settings.anomaly.clustering_mode == "fixed"
+        else "auto-k"
+    )
+    clusters: list[AnomalyCluster] = []
+    summaries: list[AnomalySummary] = []
+    plot_path = None
+    feature_rows = 0
+    timeline_df = None
+
+    if not features.empty:
+        # MODIFIED: pass AnomalySettings so GUI auto/fixed mode actually applies
+        detector = AnomalyDetector(settings=settings.anomaly)
+        model_path = request.model_path or settings.anomaly.default_model_path
+        if model_path and os.path.exists(model_path):
+            detector.load_model(model_path)
+            label_store = ClusterLabelStore.sidecar_for_model(model_path)
+            if label_store.path.exists():
+                label_store.load()
         else:
             detector.fit(features)
-        
+            label_store = None
+
         clusters, summaries = detector.detect_and_summarize(features)
+        if label_store is not None:
+            summaries = label_store.annotate_summaries(summaries)
         feature_rows = len(features)
-        
-        # Generate plot
+        if detector.last_chosen_k is not None:
+            mode = settings.anomaly.clustering_mode
+            clustering_label = f"{mode}-k={detector.last_chosen_k}"
+
         plot_path = os.path.join("scratch", "gui_anomaly_timeline.png")
         try:
             detector.plot_timeline(features, plot_path)
         except Exception as exc:
             import logging
-            logging.getLogger(__name__).error(f"Failed to generate GUI timeline plot: {exc}")
+            logging.getLogger(__name__).error("Failed to generate GUI timeline plot: %s", exc)
             plot_path = None
 
-        # Compute timeline data for interactive GUI plot
         try:
             timeline_df = detector.get_timeline_data(features)
         except Exception as exc:
             import logging
-            logging.getLogger(__name__).error(f"Failed to compute GUI timeline data: {exc}")
+            logging.getLogger(__name__).error("Failed to compute GUI timeline data: %s", exc)
             timeline_df = None
 
     report = AdvisorReport(
@@ -161,21 +195,21 @@ def run_gui_analysis_pipeline(
     )
 
     if request.generate_scenarios and summaries:
-        settings = load_settings(request.config_path)
+        pipeline_settings = load_settings(request.config_path)
         if request.llm_provider:
-            settings = settings.model_copy(
+            pipeline_settings = pipeline_settings.model_copy(
                 update={
                     "llm_provider": request.llm_provider,
-                    "llm_model": request.llm_model or settings.llm_model,
+                    "llm_model": request.llm_model or pipeline_settings.llm_model,
                 }
             )
-        discovery = resolve_discovery_report(settings=settings)
+        discovery = resolve_discovery_report(settings=pipeline_settings)
         ctx = ContextBuilder(discovery).build()
         report = run_advisor_pipeline(
             clusters,
             summaries,
-            settings=settings,
-            lookback_hours=float(request.lookback_hours),
+            settings=pipeline_settings,
+            lookback_hours=float(window.lookback_hours),
             context=ctx,
             skip_gatekeeper=request.skip_gatekeeper,
             generate_chaos=True,
@@ -187,6 +221,10 @@ def run_gui_analysis_pipeline(
         total_samples=dataset.total_samples,
         log_streams=len(dataset.logs),
         feature_rows=feature_rows,
+        lookback_hours=float(window.lookback_hours),
+        clustering_label=clustering_label,
+        window_start=window.start,
+        window_end=window.end,
         clusters=clusters,
         summaries=summaries,
         report=report,
