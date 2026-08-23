@@ -53,12 +53,23 @@ class ChaosOrchestrator:
         
         self.translator = ChaosTranslator()
         self.validator = SteadyStateValidator()
-        self.blast_radius_controller = BlastRadiusController()
+        # MODIFIED: P8 — blast radius from ChaosGenSettings.safety when available
+        from chaosgen.config.settings import load_settings
+        from chaosgen.safety.governance import SafetyPolicy
+
+        try:
+            cg_settings = load_settings()
+            safety_policy = SafetyPolicy.from_settings(cg_settings.safety)
+        except Exception:
+            safety_policy = None
+        self.blast_radius_controller = BlastRadiusController(safety_policy)
         self.dead_mans_switch: Optional[DeadMansSwitch] = None
         self.logger = logging.getLogger("ChaosOrchestrator")
         self.history_store = history_store
         self._current_experiment_db_id: Optional[int] = None
         self._experiment_db_ids: Dict[str, int] = {}
+        # MODIFIED: P0-B — last operational verdict from verification
+        self.last_verdict_report = None
 
         # HITL approval queue for AI-generated experiments
         self.pending_experiments: List[ChaosExperiment] = []
@@ -197,36 +208,69 @@ class ChaosOrchestrator:
             self.trigger_rollback()
 
     def _run_verification(self):
-        """Verify system health after/during chaos."""
-        self.logger.info("Verifying system health...")
-        
-        success = True
-        if self.current_experiment.steady_state_check:
-             # We reuse steady state checks for verification, 
-             # but strictly speaking verification might have different criteria (e.g. recovery time)
-             # For this implementation, we check if system is healthy or recovers.
-             success = self.validator.validate(self.current_experiment.steady_state_check)
+        """Verify expectations after chaos — operational verdict (P0-B)."""
+        self.logger.info("Verifying system against expectations...")
 
-        if success:
-             self.logger.info("Verification passed.")
+        criteria = self.current_experiment.steady_state_check or {}
+        report = None
+        success = True
+
+        if criteria:
+            # MODIFIED: P0-B — ExpectationVerdictEngine for SLA rationale
+            from chaosgen.advisor.catalog_promoter import evaluate_acceptance_detailed
+            from chaosgen.config.telemetry_endpoints import resolve_prometheus_url
+
+            try:
+                prom_url = resolve_prometheus_url()
+            except Exception:
+                prom_url = None
+
+            report = evaluate_acceptance_detailed(
+                criteria,
+                experiment_name=self.current_experiment.name,
+                poll=True,
+                prometheus_url=prom_url,
+            )
+            self.last_verdict_report = report
+            success = report.verdict.value == "pass" or report.verdict.value == "partial"
+            if report.verdict.value == "pass":
+                self.logger.info("Verification PASS: %s", report.rationale)
+            elif report.verdict.value == "partial":
+                self.logger.warning("Verification PARTIAL: %s", report.rationale)
+            else:
+                self.logger.warning("Verification FAIL: %s", report.rationale)
+                success = False
+
+            try:
+                from chaosgen.advisor.report_store import save_verdict_report
+
+                save_verdict_report(report)
+            except Exception as exc:
+                self.logger.debug("Could not persist verdict report: %s", exc)
         else:
-             self.logger.warning("Verification failed! System did not recover.")
-             # We might want to trigger rollback here if not already done, or just log.
+            self.last_verdict_report = None
+            self.logger.info("No steady_state_check / expectations configured; skipping probes.")
 
         if self.history_store and self._current_experiment_db_id is not None:
             from datetime import datetime, timezone
             from chaosgen.schemas.scenarios import ExperimentVerdict
 
-            verdict = ExperimentVerdict.PASS if success else ExperimentVerdict.FAIL
+            if report is not None:
+                verdict = report.verdict
+                rationale = report.rationale
+            else:
+                verdict = ExperimentVerdict.PASS if success else ExperimentVerdict.FAIL
+                rationale = None
             try:
                 self.history_store.update_verdict(
                     self._current_experiment_db_id,
                     verdict,
                     datetime.now(timezone.utc),
+                    rationale=rationale,
                 )
             except Exception as exc:
                 self.logger.warning("History update_verdict failed: %s", exc)
-        
+
         self.verification_complete()
 
     def _execute_rollback(self):

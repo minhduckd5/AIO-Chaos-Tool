@@ -1,7 +1,11 @@
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from chaosgen.schemas.faults import ChaosExperiment, TargetType
+
+if TYPE_CHECKING:
+    from chaosgen.config.settings import SafetySettings
+
 
 class SafetyPolicy(BaseModel):
     """Configuration for blast radius limits."""
@@ -9,6 +13,18 @@ class SafetyPolicy(BaseModel):
     max_affected_pods_percent: int = Field(20, description="Max percentage of pods affected")
     blocked_namespaces: List[str] = Field(default_factory=lambda: ["kube-system", "monitoring"], description="Namespaces where chaos is forbidden")
     blocked_services: List[str] = Field(default_factory=lambda: ["database-master"], description="Critical services to protect")
+
+    @classmethod
+    def from_settings(cls, settings: "SafetySettings | None") -> "SafetyPolicy":
+        """MODIFIED: P8 — build policy from ChaosGenSettings.safety."""
+        if settings is None:
+            return cls()
+        return cls(
+            max_affected_nodes=settings.max_affected_nodes,
+            max_affected_pods_percent=settings.max_affected_pods_percent,
+            blocked_namespaces=list(settings.blocked_namespaces),
+            blocked_services=list(settings.blocked_services),
+        )
 
 class BlastRadiusController:
     """

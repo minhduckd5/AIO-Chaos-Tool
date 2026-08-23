@@ -66,17 +66,52 @@ Offline bundle (no live Prometheus/Loki):
 chaosgen analyze --export /path/to/observability-export
 ```
 
+## Telemetry windows & auto-K (P7)
+
+| Mode | CLI | Notes |
+|------|-----|-------|
+| Relative | `--hours 48` | Last N hours from now (default from `telemetry.default_lookback_hours`) |
+| Absolute | `--start 2026-07-20T08:00:00Z --end 2026-07-22T08:00:00Z` | Live Prom/Loki only; mutually exclusive with `--hours` |
+| Export | `--export ./exports/7d-…` | Window from bundle `start_utc`/`end_utc`; drives gatekeeper `lookback_hours` |
+
+`chaosgen generate` accepts the same `--hours` / `--start` / `--end` / `--export` flags (no hardcoded 24h).
+
+**Auto-K:** `anomaly.clustering_mode: auto` picks KMeans `k` via silhouette on the anomalous subset (`min_clusters`…`max_clusters`). Use `fixed` + `n_clusters` for reproducible demos. This is unrelated to `--top-n` (scenario ranker).
+
+## Tuning sensitivity (P8)
+
+Demo knobs (settings.yaml or CLI override; CLI wins for one run):
+
+| Knob | settings path | CLI |
+|------|---------------|-----|
+| Lookback / window | `telemetry.*` (P7) | `--hours` / `--start`/`--end` |
+| Max clusters | `anomaly.max_clusters` | (settings / GUI) |
+| Confidence | `advisor.confidence_threshold` | `--confidence-threshold` |
+| Top N scenarios | `advisor.top_n_scenarios` | `--top-n` |
+| Gatekeeper | `gatekeeper.*` | (settings) |
+
+Lab knobs (usually settings-only): `features.*`, `ingest.log_query`, `ranking.*`, `safety.*`.  
+See `examples/registry-vm-settings.yaml` for a full annotated block.
+
+```bash
+chaosgen analyze --hours 48 --top-n 10 --confidence-threshold 0.55 --generate
+chaosgen generate --config ./examples/registry-vm-settings.yaml --top-n 3
+```
+
 ## Advisor loop (core thesis workflow)
 
 ### 1. Analyze + generate scenarios
 
 ```bash
 # Live stack
-chaosgen analyze
-chaosgen generate --save-report ./report.json
+chaosgen analyze --hours 24
+chaosgen generate --hours 24 --save-report ./report.json
 
 # Or analyze + generate in one step
-chaosgen analyze --generate --top-n 5
+chaosgen analyze --hours 48 --generate --top-n 5
+
+# Offline export (recommended for thesis demos)
+chaosgen analyze --export /path/to/exports/peak-bundle --generate
 ```
 
 Gatekeeper may leave **zero scenarios** when all clusters are NOISE/TRANSIENT or
@@ -115,6 +150,16 @@ chaosgen promote --from-report ./report.json \
 
 Promoted entries land in `promoted_scenarios.json` and re-enter the catalog.
 
+### 3b. Operational verdict (P0-B — advisor demo)
+
+Evaluate an SLA-style **claim** (standalone or after chaos):
+
+```bash
+chaosgen verdict --criteria ./examples/demo-expectation-criteria.yaml --no-poll
+```
+
+Narration script: [advisor-demo-verdict-beat.md](advisor-demo-verdict-beat.md).
+
 ### 4. Run approved experiments
 
 ```bash
@@ -145,6 +190,12 @@ chaosgen train-model --export /path/to/baseline-export --output-model ./models/b
 chaosgen train-model --live --hours 24 --output-model ./models/baseline_model.joblib
 ```
 
+Training also writes `./models/baseline_model.labels.json` — edit `name` / `description`
+per cluster (e.g. `cpu_spike`, `db_lock`) so inference can surface stable labels.
+
+Point `anomaly.default_model_path` in `settings.yaml` at the joblib so analyze/generate
+classify without re-fitting when you omit `--model-path`.
+
 ### 2. Run Inference using the pre-trained model (Client Mode)
 
 Load the pre-trained centroids for anomaly classification to ensure consistent cluster IDs:
@@ -154,7 +205,7 @@ Load the pre-trained centroids for anomaly classification to ensure consistent c
 chaosgen analyze --export /path/to/new-export --model-path ./models/baseline_model.joblib
 
 # Generate chaos experiments using the pre-trained model
-chaosgen generate --model-path ./models/baseline_model.joblib
+chaosgen generate --export /path/to/new-export --model-path ./models/baseline_model.joblib
 ```
 
 ## GUI equivalent

@@ -57,6 +57,13 @@ If JSON and DB disagree, **trust JSON** for runtime; DB is for history queries.
 - Sparse or infra-only metrics (e.g. `node_cpu` with no error logs) often yield NOISE/TRANSIENT.
 - For meaningful advisor demos, use exports with **HTTP 5xx**, latency, or correlated logs.
 - Longer lookback (`--hours`) helps chronic detection but increases noise volume.
+- Gatekeeper **frequency** = samples / `lookback_hours`. Always derive lookback from the
+  actual collection window (export metadata or `--start`/`--end`), not an unrelated CLI default.
+- Cap `anomaly.max_clusters` in noisy labs; use `clustering_mode: fixed` for reproducible demos.
+- Shorter `features.resample_step_seconds` → more feature rows (noisier); larger
+  `rolling_window_seconds` → smoother spikes. Raise `anomaly.contamination` only if
+  IsolationForest under-flags; document the value in thesis tables.
+- Keep `ranking` weights summing to ~1.0 (P8 auto-normalizes with a warning if off).
 
 ## Evaluation hygiene
 

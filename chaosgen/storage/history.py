@@ -548,19 +548,39 @@ class HistoryStore:
         experiment_row_id: int,
         verdict: ExperimentVerdict,
         ran_at: datetime | None = None,
+        rationale: str | None = None,
     ) -> None:
         ran = ran_at or _utc_now()
         with self._lock:
             conn = self._open()
             try:
-                conn.execute(
-                    """
-                    UPDATE experiments
-                    SET verdict = ?, ran_at = ?
-                    WHERE id = ?
-                    """,
-                    (verdict.value, _iso(ran), experiment_row_id),
-                )
+                # MODIFIED: P0-B — optional verdict_rationale column
+                cols = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(experiments)").fetchall()
+                }
+                if "verdict_rationale" not in cols:
+                    conn.execute(
+                        "ALTER TABLE experiments ADD COLUMN verdict_rationale TEXT"
+                    )
+                if rationale is not None:
+                    conn.execute(
+                        """
+                        UPDATE experiments
+                        SET verdict = ?, ran_at = ?, verdict_rationale = ?
+                        WHERE id = ?
+                        """,
+                        (verdict.value, _iso(ran), rationale, experiment_row_id),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE experiments
+                        SET verdict = ?, ran_at = ?
+                        WHERE id = ?
+                        """,
+                        (verdict.value, _iso(ran), experiment_row_id),
+                    )
                 conn.commit()
             finally:
                 conn.close()
