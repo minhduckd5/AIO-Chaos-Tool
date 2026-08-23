@@ -233,3 +233,18 @@ settings.local.yaml
 
 # Local draft documents
 docs/drafts/
+
+.thesis/
+# Trained ML baselines (local lab artifacts)
+models/
+*.joblib
+
+last_verdict.json
+
+# Public labeled telemetry dumps (local only — do not commit)
+data/public-datasets/
+
+# Obscura agent screenshot / PDF vault (local only)
+scratch/
+!scratch/obscura/.gitkeep
+
