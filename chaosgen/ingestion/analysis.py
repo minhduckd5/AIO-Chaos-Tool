@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import os
+from typing import TYPE_CHECKING
+
 from chaosgen.ml.anomaly_detector import AnomalyDetector
+from chaosgen.ml.cluster_labels import ClusterLabelStore
 from chaosgen.ml.feature_engineering import FeatureEngineer
 from chaosgen.schemas.scenarios import AnomalyCluster, AnomalySummary
 from chaosgen.schemas.telemetry import TelemetryDataset
-
-
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from chaosgen.config.settings import ChaosGenSettings
@@ -32,9 +33,21 @@ def analyze_dataset(
 
     anomaly_settings = settings.anomaly if settings is not None else None
     detector = AnomalyDetector(settings=anomaly_settings)
-    if model_path:
-        detector.load_model(model_path)
+    # MODIFIED: P0-A — fall back to settings.anomaly.default_model_path
+    resolved_model = model_path
+    if not resolved_model and settings is not None:
+        resolved_model = settings.anomaly.default_model_path
+
+    label_store = None
+    if resolved_model and os.path.exists(resolved_model):
+        detector.load_model(resolved_model)
+        label_store = ClusterLabelStore.sidecar_for_model(resolved_model)
+        if label_store.path.exists():
+            label_store.load()
     else:
         detector.fit(features)
+
     clusters, summaries = detector.detect_and_summarize(features)
+    if label_store is not None:
+        summaries = label_store.annotate_summaries(summaries)
     return clusters, summaries, len(features)

@@ -27,6 +27,8 @@ class TelemetryCollector:
         self.prometheus = prometheus
         self.loki = loki
         self.log_query = log_query
+        # MODIFIED: P8 — optional custom PromQL map from settings.ingest
+        self.default_custom_queries: Optional[Dict[str, str]] = None
 
     def collect_baseline(
         self,
@@ -48,7 +50,8 @@ class TelemetryCollector:
             datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
         )
 
-        metrics = self._collect_metrics(start, now, step, custom_queries)
+        merged = self._merge_custom_queries(custom_queries)
+        metrics = self._collect_metrics(start, now, step, merged)
         logs = self._collect_logs(start, now)
 
         dataset = TelemetryDataset(
@@ -88,7 +91,8 @@ class TelemetryCollector:
             (end_ts - start_ts) / 3600.0,
         )
 
-        metrics = self._collect_metrics(start_ts, end_ts, step, custom_queries)
+        merged = self._merge_custom_queries(custom_queries)
+        metrics = self._collect_metrics(start_ts, end_ts, step, merged)
         logs = self._collect_logs(start_ts, end_ts)
 
         start_utc = start if start.tzinfo else start.replace(tzinfo=timezone.utc)
@@ -107,6 +111,16 @@ class TelemetryCollector:
             len(dataset.logs),
         )
         return dataset
+
+    def _merge_custom_queries(
+        self, custom_queries: Optional[Dict[str, str]]
+    ) -> Optional[Dict[str, str]]:
+        merged: Dict[str, str] = {}
+        if self.default_custom_queries:
+            merged.update(self.default_custom_queries)
+        if custom_queries:
+            merged.update(custom_queries)
+        return merged or None
 
     def collect_current_snapshot(self) -> TelemetrySnapshot:
         """Lightweight point-in-time snapshot for live monitoring."""
@@ -141,10 +155,15 @@ class TelemetryCollector:
 
         if custom_queries:
             for name, promql in custom_queries.items():
-                series = self.prometheus.query_range(promql, start, end, step)
-                for ts in series:
-                    ts.metric_name = f"custom__{name}__{ts.metric_name}"
-                all_series.extend(series)
+                try:
+                    series = self.prometheus.query_range(promql, start, end, step)
+                    for ts in series:
+                        ts.metric_name = f"custom__{name}__{ts.metric_name}"
+                    all_series.extend(series)
+                except Exception as exc:
+                    logger.warning(
+                        "Custom PromQL %r failed (%s); skipping series", name, exc
+                    )
 
         return all_series
 
