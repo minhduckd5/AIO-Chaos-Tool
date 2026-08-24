@@ -3,6 +3,13 @@ kind: PodChaos
 metadata:
   name: {{ experiment_name | lower | replace(" ", "-") }}
   namespace: {{ namespace | default("default") }}
+  labels:
+    app.kubernetes.io/managed-by: {{ managed_by | default("chaosgen") }}
+    chaosgen.io/ephemeral: "{{ ephemeral | default("true") }}"
+    chaosgen.io/experiment: {{ experiment_label | default("chaosgen") }}
+{% if run_id %}
+    chaosgen.io/run-id: "{{ run_id }}"
+{% endif %}
 spec:
   action: pod-kill
   mode: {{ mode | default("one") }}
@@ -10,6 +17,6 @@ spec:
     namespaces:
       - {{ namespace | default("default") }}
     labelSelectors:
-      app: {{ target_name }}
+      {{ label_key | default("app") }}: {{ target_name }}
   gracePeriod: {{ grace_period | default(0) }}
-  duration: "{{ duration | default('30s') }}"
+  duration: "{{ duration }}"

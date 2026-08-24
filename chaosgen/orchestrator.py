@@ -1,6 +1,9 @@
 from typing import Dict, Any, List, Optional
+import json
 import time
 import logging
+import uuid
+from pathlib import Path
 
 from transitions import Machine
 
@@ -11,6 +14,7 @@ from .modules.pumba import PumbaModule
 from .modules.chaos_monkey import ChaosMonkeyModule
 from .modules.toxiproxy import ToxiproxyModule
 from .modules.muxy import MuxyModule
+from .modules.kubectl_chaos import KubectlChaosModule
 from .config.loader import ConfigLoader
 from .ucal.translator import ChaosTranslator, ExecutionEnvironment
 from .ucal.validation import SteadyStateValidator
@@ -26,78 +30,138 @@ class ChaosOrchestrator:
     Implements the Event-Driven State Machine with HITL approval gate
     for AI-generated experiments.
     """
-    
-    # Module registry
+
+    # --- START MODIFICATION ---
+    # Real K8s inject via kubectl-chaos + Chaos Mesh manifests
+    # --- END MODIFICATION ---
     MODULE_REGISTRY = {
-        'chaos-toolkit': ChaosToolkitModule,
-        'kube-monkey': KubeMonkeyModule,
-        'pumba': PumbaModule,
-        'chaos-monkey': ChaosMonkeyModule,
-        'toxiproxy': ToxiproxyModule,
-        'muxy': MuxyModule
+        "chaos-toolkit": ChaosToolkitModule,
+        "kube-monkey": KubeMonkeyModule,
+        "pumba": PumbaModule,
+        "chaos-monkey": ChaosMonkeyModule,
+        "toxiproxy": ToxiproxyModule,
+        "muxy": MuxyModule,
+        "kubectl-chaos": KubectlChaosModule,
     }
 
-    states = ['idle', 'pending_approval', 'steady_state_check', 'injecting', 'verifying', 'rollback']
+    states = ["idle", "pending_approval", "steady_state_check", "injecting", "verifying", "rollback"]
 
     def __init__(self, config_path: Optional[str] = None, history_store=None):
-        """
-        Initialize the chaos orchestrator.
-        
-        Args:
-            config_path: Path to configuration file
-            history_store: Optional P5 analytics store for experiment verdicts
-        """
         self.config_loader = ConfigLoader(config_path) if config_path else ConfigLoader()
         self.modules: Dict[str, BaseChaosModule] = {}
-        self._initialize_modules()
-        
-        self.translator = ChaosTranslator()
-        self.validator = SteadyStateValidator()
-        # MODIFIED: P8 — blast radius from ChaosGenSettings.safety when available
+        self._cg_settings = None
+        self._run_id: Optional[str] = None
+        self.active_manifests: List[Dict[str, Any]] = []
+        self.active_plans = []
+        self.last_rollback_status: Optional[str] = None
+        self.last_outcome: Optional[str] = None
+
         from chaosgen.config.settings import load_settings
         from chaosgen.safety.governance import SafetyPolicy
 
         try:
-            cg_settings = load_settings()
-            safety_policy = SafetyPolicy.from_settings(cg_settings.safety)
+            self._cg_settings = load_settings(config_path)
+            safety_policy = SafetyPolicy.from_settings(self._cg_settings.safety)
         except Exception:
+            self._cg_settings = None
             safety_policy = None
+
+        self._initialize_modules()
+        inject = getattr(self._cg_settings, "inject", None) if self._cg_settings else None
+        hints_env = None
+        if self._cg_settings and self._cg_settings.hints:
+            env = self._cg_settings.hints.environment
+            hints_env = env.value if hasattr(env, "value") else str(env) if env else None
+        self.translator = ChaosTranslator(
+            inject_settings=inject,
+            hints_environment=hints_env,
+        )
+        self.validator = SteadyStateValidator()
         self.blast_radius_controller = BlastRadiusController(safety_policy)
         self.dead_mans_switch: Optional[DeadMansSwitch] = None
         self.logger = logging.getLogger("ChaosOrchestrator")
         self.history_store = history_store
         self._current_experiment_db_id: Optional[int] = None
         self._experiment_db_ids: Dict[str, int] = {}
-        # MODIFIED: P0-B — last operational verdict from verification
         self.last_verdict_report = None
+        self.current_experiment: Optional[ChaosExperiment] = None
 
-        # HITL approval queue for AI-generated experiments
         self.pending_experiments: List[ChaosExperiment] = []
         self.pending_report: Optional[AdvisorReport] = None
 
-        # Initialize State Machine
-        self.machine = Machine(model=self, states=ChaosOrchestrator.states, initial='idle')
-        
-        # Original transitions
-        self.machine.add_transition(trigger='start_experiment', source='idle', dest='steady_state_check', after='_run_steady_state_check')
-        self.machine.add_transition(trigger='check_passed', source='steady_state_check', dest='injecting', after='_execute_injection')
-        self.machine.add_transition(trigger='check_failed', source='steady_state_check', dest='idle')
-        self.machine.add_transition(trigger='injection_complete', source='injecting', dest='verifying', after='_run_verification')
-        self.machine.add_transition(trigger='verification_complete', source='verifying', dest='idle', after='_cleanup_safety')
-        self.machine.add_transition(trigger='trigger_rollback', source='*', dest='rollback', after='_execute_rollback')
-        self.machine.add_transition(trigger='rollback_complete', source='rollback', dest='idle', after='_cleanup_safety')
-
-        # HITL approval gate transitions
-        self.machine.add_transition(trigger='submit_for_approval', source='idle', dest='pending_approval')
-        self.machine.add_transition(trigger='approve_experiment', source='pending_approval', dest='steady_state_check', after='_run_steady_state_check')
-        self.machine.add_transition(trigger='reject_experiment', source='pending_approval', dest='idle', after='_clear_pending')
+        self.machine = Machine(model=self, states=ChaosOrchestrator.states, initial="idle")
+        self.machine.add_transition(
+            trigger="start_experiment",
+            source="idle",
+            dest="steady_state_check",
+            after="_run_steady_state_check",
+        )
+        self.machine.add_transition(
+            trigger="check_passed",
+            source="steady_state_check",
+            dest="injecting",
+            after="_execute_injection",
+        )
+        self.machine.add_transition(trigger="check_failed", source="steady_state_check", dest="idle")
+        self.machine.add_transition(
+            trigger="injection_complete",
+            source="injecting",
+            dest="verifying",
+            after="_run_verification",
+        )
+        self.machine.add_transition(
+            trigger="verification_complete",
+            source="verifying",
+            dest="idle",
+            after="_cleanup_safety",
+        )
+        self.machine.add_transition(
+            trigger="trigger_rollback",
+            source="*",
+            dest="rollback",
+            after="_execute_rollback",
+        )
+        self.machine.add_transition(
+            trigger="rollback_complete",
+            source="rollback",
+            dest="idle",
+            after="_cleanup_safety",
+        )
+        self.machine.add_transition(
+            trigger="submit_for_approval", source="idle", dest="pending_approval"
+        )
+        self.machine.add_transition(
+            trigger="approve_experiment",
+            source="pending_approval",
+            dest="steady_state_check",
+            after="_run_steady_state_check",
+        )
+        self.machine.add_transition(
+            trigger="reject_experiment",
+            source="pending_approval",
+            dest="idle",
+            after="_clear_pending",
+        )
 
     def _initialize_modules(self) -> None:
-        """Initialize all configured chaos modules."""
         module_configs = self.config_loader.get_all_modules()
-        
+        inject_cfg: Dict[str, Any] = {}
+        if self._cg_settings and self._cg_settings.inject:
+            inj = self._cg_settings.inject
+            inject_cfg = {
+                "kubeconfig": inj.kubeconfig,
+                "context": inj.context,
+                "default_namespace": inj.default_namespace,
+                "dry_run": inj.dry_run,
+                "kubectl_timeout_s": inj.kubectl_timeout_s,
+                "delete_force_on_timeout": inj.delete_force_on_timeout,
+                "managed_by_label": inj.managed_by_label,
+                "ephemeral_label": inj.ephemeral_label,
+            }
         for module_name, module_class in self.MODULE_REGISTRY.items():
             config = module_configs.get(module_name, {})
+            if module_name == "kubectl-chaos":
+                config = {**inject_cfg, **config}
             self.modules[module_name] = module_class(config)
     
     def get_module(self, module_name: str) -> Optional[BaseChaosModule]:
@@ -136,75 +200,180 @@ class ChaosOrchestrator:
     def run_experiment(self, experiment: ChaosExperiment):
         """Entry point to run a full chaos experiment."""
         self.current_experiment = experiment
-        self.logger.info(f"Starting experiment: {experiment.name}")
+        self.active_manifests = []
+        self.last_rollback_status = None
+        self.last_outcome = None
+        self._run_id = str(uuid.uuid4())
+        self.logger.info("Starting experiment: %s (run_id=%s)", experiment.name, self._run_id)
         self.start_experiment()
+
+    def _default_steady_state(self) -> Dict[str, Any]:
+        """Prom-based default when form does not hardcode localhost health."""
+        from chaosgen.config.telemetry_endpoints import resolve_prometheus_url
+
+        try:
+            prom_url = resolve_prometheus_url()
+        except Exception:
+            prom_url = None
+        if not prom_url:
+            return {}
+        return {
+            "prometheus": {
+                "url": prom_url.rstrip("/"),
+                "query": 'up{job=~".+"}',
+            }
+        }
 
     def _run_steady_state_check(self):
         """Verify system health before starting."""
         self.logger.info("Running steady-state check...")
-        
         success = True
-        
-        if self.current_experiment.steady_state_check:
-             # Validate Blast Radius before proceeding
-             try:
-                 self.blast_radius_controller.validate_experiment(self.current_experiment)
-             except ValueError as e:
-                 self.logger.error(f"Safety Policy Violation: {e}")
-                 self.check_failed()
-                 return
+        check = self.current_experiment.steady_state_check
+        if check is None:
+            check = self._default_steady_state()
+            self.current_experiment.steady_state_check = check or None
 
-             success = self.validator.validate(self.current_experiment.steady_state_check)
+        try:
+            self.blast_radius_controller.validate_experiment(self.current_experiment)
+        except ValueError as e:
+            self.logger.error("Safety Policy Violation: %s", e)
+            self.last_outcome = "FAIL"
+            self.check_failed()
+            return
 
-             # Start Dead Man's Switch if check passes
-             if success:
-                 self._start_dead_mans_switch()
+        # Pod count vs blast radius (when kubectl-chaos available)
+        kube = self.get_module("kubectl-chaos")
+        if kube and self.current_experiment.target:
+            label_key = "app"
+            if self._cg_settings and self._cg_settings.inject:
+                label_key = self._cg_settings.inject.label_key
+            selector = self.current_experiment.target.selector or {
+                label_key: self.current_experiment.target.name
+            }
+            counted = kube.execute(
+                "count_pods_for_selector",
+                {
+                    "namespace": self.current_experiment.target.namespace
+                    or (self._cg_settings.inject.default_namespace if self._cg_settings else "default"),
+                    "label_selector": selector,
+                },
+            )
+            if counted.get("success") and self._cg_settings:
+                count = int(counted.get("count") or 0)
+                # Soft guard: absolute pod count vs max_affected_nodes * 5 heuristic
+                max_pods = max(1, self._cg_settings.safety.max_affected_nodes * 5)
+                if count > max_pods:
+                    self.logger.error(
+                        "Blast radius: %d pods match selector (cap ~%d)", count, max_pods
+                    )
+                    self.last_outcome = "FAIL"
+                    self.check_failed()
+                    return
+
+        if check:
+            success = self.validator.validate(check)
+            if success:
+                self._start_dead_mans_switch()
 
         if success:
             self.logger.info("Steady-state check passed.")
             self.check_passed()
         else:
             self.logger.error("Steady-state check failed. Aborting.")
+            self.last_outcome = "FAIL"
             self.check_failed()
 
     def _start_dead_mans_switch(self):
-        """Initialize and start the DMS monitoring thread."""
-        if self.current_experiment.steady_state_check:
+        if self.current_experiment and self.current_experiment.steady_state_check:
             self.dead_mans_switch = DeadMansSwitch(
-                check_fn=lambda: self.validator.validate(self.current_experiment.steady_state_check),
+                check_fn=lambda: self.validator.validate(
+                    self.current_experiment.steady_state_check
+                ),
                 trigger_fn=self.trigger_rollback,
-                interval=5 # Configurable?
+                interval=5,
             )
             self.dead_mans_switch.start()
 
     def _cleanup_safety(self):
-        """Stop safety monitoring."""
         if self.dead_mans_switch:
             self.dead_mans_switch.stop()
             self.dead_mans_switch = None
 
     def _execute_injection(self):
-        """Translate and execute faults."""
+        """Translate faults → ActionPlans → kubectl apply / delete_pod."""
         self.logger.info("Injecting faults...")
         try:
             plans = self.translator.translate(self.current_experiment)
             self.active_plans = plans
-            
-            for plan in plans:
-                self.logger.info(f"Executing: {plan.tool_name} -> {plan.action}")
-                result = self.execute_action(plan.tool_name, plan.action, plan.params)
-                if not result.get('success', True): # Assuming modules return success=True/False or raise
-                     # In strict mode we might rollback here
-                     self.logger.warning(f"Injection failed: {result}")
+            writer = None
+            inject = self._cg_settings.inject if self._cg_settings else None
 
-            # Wait for duration if specified (simple sleep for now, could be async)
-            # This blocks the main thread, in async version use await asyncio.sleep
-            # For this synchronous implementation, we just move on or sleep if needed.
-            
+            for plan in plans:
+                params = dict(plan.params)
+                if plan.tool_name == "kubectl-chaos" and plan.action == "apply_manifest":
+                    from chaosgen.advisor.manifest_writer import ManifestWriter
+
+                    if writer is None:
+                        writer = ManifestWriter()
+                    fault_idx = int(params.get("fault_index", 0))
+                    fault = self.current_experiment.faults[fault_idx]
+                    path = writer.write_chaosmesh_fault(
+                        self.current_experiment,
+                        fault,
+                        run_id=self._run_id,
+                        label_key=(inject.label_key if inject else "app"),
+                        managed_by=(inject.managed_by_label if inject else "chaosgen"),
+                        ephemeral=(inject.ephemeral_label if inject else "true"),
+                        prefer_self_expiring=(
+                            inject.prefer_self_expiring_chaos if inject else True
+                        ),
+                        suffix=str(fault_idx),
+                    )
+                    import yaml as _yaml
+
+                    doc = _yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+                    meta = doc.get("metadata") or {}
+                    kind = str(doc.get("kind") or writer.chaos_kind_for(fault)).lower()
+                    params["manifest_path"] = str(path)
+                    self.active_manifests.append(
+                        {
+                            "path": str(path),
+                            "kind": kind,
+                            "name": meta.get("name") or path.stem,
+                            "namespace": meta.get("namespace")
+                            or params.get("namespace")
+                            or "default",
+                            "fault_type": fault.fault_type.value,
+                        }
+                    )
+
+                self.logger.info("Executing: %s -> %s", plan.tool_name, plan.action)
+                result = self.execute_action(plan.tool_name, plan.action, params)
+                if not result.get("success", False):
+                    self.logger.error("Injection failed: %s", result)
+                    self.last_outcome = "PARTIAL"
+                    if result.get("timeout") or "timeout" in str(result.get("error", "")).lower():
+                        self.last_outcome = "INCONCLUSIVE"
+                    self.trigger_rollback()
+                    return
+
+            # Honor longest fault duration (self-expiring CRs also tick on cluster)
+            max_wait = 0
+            for fault in self.current_experiment.faults:
+                from chaosgen.advisor.manifest_writer import _parse_duration_seconds
+
+                max_wait = max(max_wait, _parse_duration_seconds(fault.duration or "30s"))
+            # Cap sleep for responsiveness; CR duration still applies in-cluster
+            wait_s = min(max_wait, 120)
+            if wait_s > 0 and not (inject and inject.dry_run):
+                self.logger.info("Waiting %ss for chaos window...", wait_s)
+                time.sleep(wait_s)
+
             self.injection_complete()
-            
+
         except Exception as e:
-            self.logger.error(f"Injection error: {e}")
+            self.logger.error("Injection error: %s", e)
+            self.last_outcome = "PARTIAL"
             self.trigger_rollback()
 
     def _run_verification(self):
@@ -216,7 +385,6 @@ class ChaosOrchestrator:
         success = True
 
         if criteria:
-            # MODIFIED: P0-B — ExpectationVerdictEngine for SLA rationale
             from chaosgen.advisor.catalog_promoter import evaluate_acceptance_detailed
             from chaosgen.config.telemetry_endpoints import resolve_prometheus_url
 
@@ -225,30 +393,41 @@ class ChaosOrchestrator:
             except Exception:
                 prom_url = None
 
-            report = evaluate_acceptance_detailed(
-                criteria,
-                experiment_name=self.current_experiment.name,
-                poll=True,
-                prometheus_url=prom_url,
-            )
-            self.last_verdict_report = report
-            success = report.verdict.value == "pass" or report.verdict.value == "partial"
-            if report.verdict.value == "pass":
-                self.logger.info("Verification PASS: %s", report.rationale)
-            elif report.verdict.value == "partial":
-                self.logger.warning("Verification PARTIAL: %s", report.rationale)
-            else:
-                self.logger.warning("Verification FAIL: %s", report.rationale)
+            try:
+                report = evaluate_acceptance_detailed(
+                    criteria,
+                    experiment_name=self.current_experiment.name,
+                    poll=True,
+                    prometheus_url=prom_url,
+                )
+                self.last_verdict_report = report
+                success = report.verdict.value in ("pass", "partial")
+                self.last_outcome = report.verdict.value.upper()
+                if report.verdict.value == "pass":
+                    self.logger.info("Verification PASS: %s", report.rationale)
+                elif report.verdict.value == "partial":
+                    self.logger.warning("Verification PARTIAL: %s", report.rationale)
+                else:
+                    self.logger.warning("Verification FAIL: %s", report.rationale)
+                    success = False
+            except Exception as exc:
+                self.logger.error(
+                    "Verification inconclusive (telemetry unreachable): %s", exc
+                )
+                self.last_outcome = "INCONCLUSIVE"
+                self.last_verdict_report = None
                 success = False
 
             try:
                 from chaosgen.advisor.report_store import save_verdict_report
 
-                save_verdict_report(report)
+                if report is not None:
+                    save_verdict_report(report)
             except Exception as exc:
                 self.logger.debug("Could not persist verdict report: %s", exc)
         else:
             self.last_verdict_report = None
+            self.last_outcome = self.last_outcome or "PASS"
             self.logger.info("No steady_state_check / expectations configured; skipping probes.")
 
         if self.history_store and self._current_experiment_db_id is not None:
@@ -271,20 +450,85 @@ class ChaosOrchestrator:
             except Exception as exc:
                 self.logger.warning("History update_verdict failed: %s", exc)
 
+        # Best-effort cleanup of remaining CRs after verify window
+        if self.active_manifests:
+            self._rollback_manifests(best_effort=True)
+
         self.verification_complete()
 
+    def _orphan_path(self) -> Path:
+        return Path(".chaosgen") / "orphan_resources.json"
+
+    def _persist_orphans(self, entries: List[Dict[str, Any]]) -> None:
+        path = self._orphan_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing: List[Dict[str, Any]] = []
+        if path.is_file():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                existing = []
+        existing.extend(entries)
+        path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        self.logger.critical("Orphan resources recorded at %s", path)
+
+    def _rollback_manifests(self, *, best_effort: bool = False) -> str:
+        """Delete all tracked manifests; return pass|partial|fail."""
+        if not self.active_manifests:
+            self.last_rollback_status = "pass"
+            return "pass"
+
+        kube = self.get_module("kubectl-chaos")
+        if not kube:
+            self.last_rollback_status = "fail"
+            return "fail"
+
+        failures: List[Dict[str, Any]] = []
+        for item in list(self.active_manifests):
+            result = kube.execute(
+                "delete_manifest",
+                {
+                    "manifest_path": item.get("path"),
+                    "kind": item.get("kind"),
+                    "name": item.get("name"),
+                    "namespace": item.get("namespace"),
+                },
+            )
+            if not result.get("success"):
+                failures.append({**item, "error": result.get("error") or result.get("message")})
+
+        if failures:
+            self._persist_orphans(failures)
+            # Label sweep fallback (works even without local state on next run)
+            kube.execute("gc_ephemeral", {})
+            status = "partial"
+        else:
+            status = "pass"
+            self.active_manifests = []
+
+        self.last_rollback_status = status
+        if not best_effort:
+            self.logger.info("Rollback status: %s", status)
+        return status
+
     def _execute_rollback(self):
-        """Rollback injected faults."""
+        """Rollback injected faults with timeout/force/orphan path."""
         self.logger.info("Rolling back...")
-        
-        # Stop monitoring immediately to prevent double triggers
         if self.dead_mans_switch:
             self.dead_mans_switch.stop()
             self.dead_mans_switch = None
 
-        # Logic to reverse actions if possible (e.g., delete netem rules)
-        # Many chaos tools (like Pumba) have auto-cleanup or specific stop commands.
+        status = self._rollback_manifests(best_effort=False)
+        if status != "pass" and not self.last_outcome:
+            self.last_outcome = "PARTIAL"
         self.rollback_complete()
+
+    def inject_gc(self) -> Dict[str, Any]:
+        """API-label sweep of ephemeral ChaosGen CRs (no local state required)."""
+        kube = self.get_module("kubectl-chaos")
+        if not kube:
+            return {"success": False, "error": "kubectl-chaos module not loaded"}
+        return kube.execute("gc_ephemeral", {})
 
     def get_module_status(self, module_name: str) -> Dict[str, Any]:
         module = self.get_module(module_name)

@@ -249,12 +249,35 @@ class SafetySettings(BaseModel):
 
     max_affected_nodes: int = Field(default=2, ge=1)
     max_affected_pods_percent: int = Field(default=20, ge=1, le=100)
+    max_services_per_suite: int = Field(default=3, ge=1, le=20)
     blocked_namespaces: list[str] = Field(
         default_factory=lambda: ["kube-system", "monitoring"]
     )
     blocked_services: list[str] = Field(
         default_factory=lambda: ["database-master"]
     )
+
+
+# ---------------------------------------------------------------------------
+# Inject settings (real K8s chaos — kubeconfig / kubectl path)
+# ---------------------------------------------------------------------------
+
+
+class InjectSettings(BaseModel):
+    """Remote Kubernetes inject via kubeconfig (Lens-parity API path)."""
+
+    enabled: bool = False
+    kubeconfig: str | None = None
+    context: str | None = None
+    default_namespace: str = "default"
+    label_key: str = "app"
+    dry_run: bool = False
+    chaos_backend: Literal["chaosmesh", "delete_pod"] = "chaosmesh"
+    kubectl_timeout_s: int = Field(default=30, ge=5, le=600)
+    delete_force_on_timeout: bool = True
+    prefer_self_expiring_chaos: bool = True
+    managed_by_label: str = "chaosgen"
+    ephemeral_label: str = "true"
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +310,7 @@ class ChaosGenSettings(BaseModel):
     advisor: AdvisorSettings = Field(default_factory=AdvisorSettings)
     ranking: RankingSettings = Field(default_factory=RankingSettings)
     safety: SafetySettings = Field(default_factory=SafetySettings)
+    inject: InjectSettings = Field(default_factory=InjectSettings)
     gatekeeper: GatekeeperSettings = Field(default_factory=GatekeeperSettings)
     history: HistorySettings = Field(default_factory=HistorySettings)
 

@@ -133,6 +133,35 @@ class ExperimentsView(QWidget):
         )
         form_layout.addWidget(form_header)
 
+        # --- START MODIFICATION ---
+        # Cluster connection (Lens-parity kubeconfig) + multi-fault rows
+        # --- END MODIFICATION ---
+        conn_card = self._make_card("Cluster Connection")
+        conn_fl = QFormLayout()
+        self._kubeconfig = QLineEdit("")
+        self._kubeconfig.setPlaceholderText("~/.kube/config")
+        self._style_input(self._kubeconfig)
+        self._context = QComboBox()
+        self._context.setEditable(True)
+        self._dry_run = QCheckBox("Dry-run (no cluster mutation)")
+        self._dry_run.setChecked(True)
+        self._test_conn_btn = QPushButton("Test connection")
+        self._test_conn_btn.clicked.connect(self._on_test_connection)
+        self._refresh_ctx_btn = QPushButton("Refresh contexts")
+        self._refresh_ctx_btn.clicked.connect(self._on_refresh_contexts)
+        conn_fl.addRow("Kubeconfig:", self._kubeconfig)
+        conn_fl.addRow("Context:", self._context)
+        conn_row = QHBoxLayout()
+        conn_row.addWidget(self._test_conn_btn)
+        conn_row.addWidget(self._refresh_ctx_btn)
+        conn_fl.addRow("", conn_row)
+        conn_fl.addRow("", self._dry_run)
+        self._conn_status = QLabel("Status: not tested")
+        self._conn_status.setStyleSheet(f"color: {Colors.TEXT_MUTED};")
+        conn_fl.addRow("", self._conn_status)
+        conn_card.layout().addLayout(conn_fl)
+        form_layout.addWidget(conn_card)
+
         # Card: Experiment Info
         info_card = self._make_card("Experiment Details")
         info_fl = QFormLayout()
@@ -145,72 +174,45 @@ class ExperimentsView(QWidget):
         info_card.layout().addLayout(info_fl)
         form_layout.addWidget(info_card)
 
-        # Card: Target
-        target_card = self._make_card("Target Configuration")
+        # Card: Microservice target
+        target_card = self._make_card("Microservice Target")
         target_fl = QFormLayout()
         self._target_type = QComboBox()
         for t in TargetType:
             self._target_type.addItem(t.value)
-        self._target_name = QLineEdit("frontend")
+        idx = self._target_type.findText(TargetType.SERVICE.value)
+        if idx >= 0:
+            self._target_type.setCurrentIndex(idx)
         self._target_ns = QLineEdit("default")
-        self._style_input(self._target_name)
         self._style_input(self._target_ns)
+        self._service_combo = QComboBox()
+        self._service_combo.setEditable(True)
+        self._service_combo.addItem("frontend")
+        self._label_key = QLineEdit("app")
+        self._style_input(self._label_key)
+        self._refresh_svc_btn = QPushButton("Refresh services")
+        self._refresh_svc_btn.clicked.connect(self._on_refresh_services)
         target_fl.addRow("Type:", self._target_type)
-        target_fl.addRow("Name / Label:", self._target_name)
         target_fl.addRow("Namespace:", self._target_ns)
+        target_fl.addRow("Service:", self._service_combo)
+        target_fl.addRow("Label key:", self._label_key)
+        target_fl.addRow("", self._refresh_svc_btn)
         target_card.layout().addLayout(target_fl)
         form_layout.addWidget(target_card)
 
-        # Card: Fault
-        fault_card = self._make_card("Fault Injection")
-        fault_fl = QFormLayout()
-        self._fault_type = QComboBox()
-        for f in FaultType:
-            self._fault_type.addItem(f.value)
-        self._duration = QLineEdit("30s")
-        self._style_input(self._duration)
-        fault_fl.addRow("Fault Type:", self._fault_type)
-        fault_fl.addRow("Duration:", self._duration)
-
-        # Stacked params
-        self._params_stack = QStackedWidget()
-
-        # Network page
-        net_page = QWidget()
-        net_fl = QFormLayout(net_page)
-        self._latency = QLineEdit("100ms")
-        self._jitter = QLineEdit("10ms")
-        self._style_input(self._latency)
-        self._style_input(self._jitter)
-        net_fl.addRow("Latency:", self._latency)
-        net_fl.addRow("Jitter:", self._jitter)
-        self._params_stack.addWidget(net_page)
-
-        # Process page
-        proc_page = QWidget()
-        proc_fl = QFormLayout(proc_page)
-        self._signal = QLineEdit("SIGKILL")
-        self._style_input(self._signal)
-        proc_fl.addRow("Signal:", self._signal)
-        self._params_stack.addWidget(proc_page)
-
-        # Resource page
-        res_page = QWidget()
-        res_fl = QFormLayout(res_page)
-        self._cpu = QSpinBox()
-        self._cpu.setRange(0, 100)
-        self._cpu.setValue(80)
-        res_fl.addRow("CPU %:", self._cpu)
-        self._params_stack.addWidget(res_page)
-
-        # Empty page
-        self._params_stack.addWidget(QWidget())
-
-        fault_fl.addRow("Parameters:", self._params_stack)
-        fault_card.layout().addLayout(fault_fl)
+        # Card: multi-fault list
+        fault_card = self._make_card("Fault Injection (multi-fault)")
+        self._fault_rows_layout = QVBoxLayout()
+        self._fault_row_widgets: list[dict] = []
+        fault_card.layout().addLayout(self._fault_rows_layout)
+        fault_btns = QHBoxLayout()
+        self._add_fault_btn = QPushButton("Add fault")
+        self._add_fault_btn.clicked.connect(lambda: self._add_fault_row())
+        fault_btns.addWidget(self._add_fault_btn)
+        fault_btns.addStretch()
+        fault_card.layout().addLayout(fault_btns)
         form_layout.addWidget(fault_card)
-
-        self._fault_type.currentTextChanged.connect(self._update_params)
+        self._add_fault_row()
 
         # Options
         self._rollback = QCheckBox("Auto-Rollback")
@@ -236,6 +238,126 @@ class ExperimentsView(QWidget):
         layout.addWidget(splitter)
 
         self._set_lifecycle_phase("Pending")
+        self._load_inject_defaults()
+
+    def _load_inject_defaults(self) -> None:
+        try:
+            from chaosgen.config.settings import load_settings
+
+            settings = load_settings()
+            inj = settings.inject
+            if inj.kubeconfig:
+                self._kubeconfig.setText(inj.kubeconfig)
+            if inj.context:
+                self._context.setEditText(inj.context)
+            self._dry_run.setChecked(bool(inj.dry_run))
+            self._target_ns.setText(inj.default_namespace or "default")
+            self._label_key.setText(inj.label_key or "app")
+        except Exception:
+            pass
+
+    def _kubectl_module(self):
+        orch = self._controller.orchestrator
+        mod = orch.get_module("kubectl-chaos")
+        if mod is None:
+            return None
+        # Live-update config from form
+        mod.kubeconfig = mod._expand(self._kubeconfig.text().strip() or None)
+        ctx = self._context.currentText().strip()
+        mod.context = ctx or None
+        mod.dry_run = self._dry_run.isChecked()
+        mod.default_namespace = self._target_ns.text().strip() or "default"
+        return mod
+
+    def _on_test_connection(self) -> None:
+        mod = self._kubectl_module()
+        if not mod:
+            self._conn_status.setText("Status: kubectl-chaos module missing")
+            return
+        result = mod.execute("test_connection", {})
+        if result.get("success"):
+            self._conn_status.setText("Status: OK — cluster reachable")
+            self._conn_status.setStyleSheet(f"color: {Colors.SUCCESS};")
+            self._controller.log_message.emit(result.get("message") or "connection OK")
+        else:
+            err = result.get("error") or result.get("message") or "failed"
+            self._conn_status.setText(f"Status: FAIL — {err}")
+            self._conn_status.setStyleSheet(f"color: {Colors.DANGER};")
+            self._controller.log_message.emit(f"Test connection failed: {err}")
+
+    def _on_refresh_contexts(self) -> None:
+        mod = self._kubectl_module()
+        if not mod:
+            return
+        result = mod.execute("list_contexts", {})
+        self._context.clear()
+        for name in result.get("contexts") or []:
+            self._context.addItem(name)
+
+    def _on_refresh_services(self) -> None:
+        mod = self._kubectl_module()
+        if not mod:
+            return
+        result = mod.execute(
+            "list_workloads",
+            {"namespace": self._target_ns.text().strip() or "default"},
+        )
+        current = self._service_combo.currentText()
+        self._service_combo.clear()
+        workloads = result.get("workloads") or []
+        if not result.get("success"):
+            self._controller.log_message.emit(
+                f"Refresh services failed: {result.get('error') or result.get('message')}"
+            )
+            self._service_combo.addItem(current or "frontend")
+            return
+        for name in workloads:
+            self._service_combo.addItem(name)
+        if current:
+            idx = self._service_combo.findText(current)
+            if idx >= 0:
+                self._service_combo.setCurrentIndex(idx)
+        self._controller.log_message.emit(f"Loaded {len(workloads)} workload(s)")
+
+    def _add_fault_row(self, fault_type: str = "process_kill") -> None:
+        row = QWidget()
+        fl = QFormLayout(row)
+        ftype = QComboBox()
+        for f in FaultType:
+            ftype.addItem(f.value)
+        idx = ftype.findText(fault_type)
+        if idx >= 0:
+            ftype.setCurrentIndex(idx)
+        duration = QLineEdit("30s")
+        self._style_input(duration)
+        latency = QLineEdit("100ms")
+        self._style_input(latency)
+        signal = QLineEdit("SIGKILL")
+        self._style_input(signal)
+        remove_btn = QPushButton("Remove")
+        fl.addRow("Type:", ftype)
+        fl.addRow("Duration:", duration)
+        fl.addRow("Latency (net):", latency)
+        fl.addRow("Signal (kill):", signal)
+        fl.addRow("", remove_btn)
+        entry = {
+            "widget": row,
+            "ftype": ftype,
+            "duration": duration,
+            "latency": latency,
+            "signal": signal,
+        }
+        remove_btn.clicked.connect(lambda: self._remove_fault_row(entry))
+        self._fault_row_widgets.append(entry)
+        self._fault_rows_layout.addWidget(row)
+
+    def _remove_fault_row(self, entry: dict) -> None:
+        if len(self._fault_row_widgets) <= 1:
+            QMessageBox.information(self, "Faults", "At least one fault row is required.")
+            return
+        self._fault_row_widgets.remove(entry)
+        entry["widget"].setParent(None)
+        entry["widget"].deleteLater()
 
     def _make_card(self, title: str) -> QWidget:
         card = QWidget()
@@ -257,46 +379,76 @@ class ExperimentsView(QWidget):
         )
 
     def _update_params(self, fault_type):
-        if fault_type in ("network_latency", "packet_loss"):
-            self._params_stack.setCurrentIndex(0)
-        elif fault_type == "process_kill":
-            self._params_stack.setCurrentIndex(1)
-        elif fault_type == "resource_exhaustion":
-            self._params_stack.setCurrentIndex(2)
-        else:
-            self._params_stack.setCurrentIndex(3)
+        # Kept for compatibility; multi-fault rows carry their own params.
+        return
 
     def _on_submit(self):
         try:
+            service = self._service_combo.currentText().strip()
+            if not service:
+                raise ValueError("Select or enter a microservice target")
+            label_key = self._label_key.text().strip() or "app"
+            ns = self._target_ns.text().strip() or "default"
             target = TargetSpec(
                 type=TargetType(self._target_type.currentText()),
-                name=self._target_name.text(),
-                namespace=self._target_ns.text() or None,
+                name=service,
+                namespace=ns,
+                selector={label_key: service},
             )
-            ftype = self._fault_type.currentText()
-            common = {"fault_type": FaultType(ftype), "duration": self._duration.text()}
 
-            if ftype in ("network_latency", "packet_loss"):
-                fault = NetworkFaultSpec(**common, latency=self._latency.text(), jitter=self._jitter.text())
-            elif ftype == "process_kill":
-                fault = ProcessFaultSpec(**common, signal=self._signal.text())
-            elif ftype == "resource_exhaustion":
-                fault = ResourceFaultSpec(**common, cpu_percent=self._cpu.value())
-            else:
-                fault = FaultSpec(**common)
+            faults: list[FaultSpec] = []
+            for row in self._fault_row_widgets:
+                ftype = row["ftype"].currentText()
+                common = {
+                    "fault_type": FaultType(ftype),
+                    "duration": row["duration"].text().strip() or "30s",
+                }
+                if ftype in ("network_latency", "packet_loss"):
+                    faults.append(
+                        NetworkFaultSpec(
+                            **common,
+                            latency=row["latency"].text().strip() or "100ms",
+                            jitter="10ms",
+                            loss_percentage=10.0 if ftype == "packet_loss" else None,
+                        )
+                    )
+                elif ftype == "process_kill":
+                    faults.append(
+                        ProcessFaultSpec(
+                            **common,
+                            signal=row["signal"].text().strip() or "SIGKILL",
+                        )
+                    )
+                elif ftype == "resource_exhaustion":
+                    faults.append(ResourceFaultSpec(**common, cpu_percent=80))
+                else:
+                    faults.append(FaultSpec(**common))
+
+            if not faults:
+                raise ValueError("Add at least one fault")
+
+            # Persist dry-run / kubeconfig onto module for this run
+            self._kubectl_module()
 
             experiment = ChaosExperiment(
                 name=self._name_input.text(),
                 description=self._desc_input.text(),
                 target=target,
-                faults=[fault],
+                faults=faults,
                 rollback=self._rollback.isChecked(),
-                steady_state_check={"http_health": "http://localhost:8080/health"},
+                steady_state_check=None,  # orchestrator uses Prom default
             )
 
             self._controller.run_experiment_async(experiment)
-            self._history_list.insertItem(0, QListWidgetItem(f"[STARTED] {experiment.name}"))
-            self._controller.log_message.emit(f"Experiment created: {experiment.name}")
+            self._history_list.insertItem(
+                0,
+                QListWidgetItem(
+                    f"[STARTED] {experiment.name} → {service} ({len(faults)} fault(s))"
+                ),
+            )
+            self._controller.log_message.emit(
+                f"Experiment created: {experiment.name} target={service} faults={len(faults)}"
+            )
             self._set_lifecycle_phase("Injecting")
 
         except Exception as e:

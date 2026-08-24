@@ -1177,6 +1177,40 @@ def verdict_cmd(criteria_file, prometheus_url, no_poll, experiment_name, save_pa
 
 
 # ---------------------------------------------------------------------------
+# inject-gc  (label-driven orphan sweep — no local state required)
+# ---------------------------------------------------------------------------
+
+
+@main.command("inject-gc")
+@click.option("--config", default=None, help="Path to settings YAML.")
+@click.option("--dry-run", is_flag=True, default=False, help="Force dry-run on kubectl module.")
+@click.option("--namespace", default=None, help="Limit GC to one namespace (default: all).")
+def inject_gc(config, dry_run, namespace):
+    """Delete ephemeral Chaos Mesh CRs owned by ChaosGen (managed-by label)."""
+    from chaosgen.orchestrator import ChaosOrchestrator
+
+    orch = ChaosOrchestrator(config_path=config)
+    kube = orch.get_module("kubectl-chaos")
+    if not kube:
+        raise click.ClickException("kubectl-chaos module not available")
+    if dry_run:
+        kube.dry_run = True
+    result = kube.execute(
+        "gc_ephemeral",
+        {"namespace": namespace} if namespace else {},
+    )
+    if result.get("success"):
+        click.secho(
+            result.get("message") or "inject-gc completed",
+            fg="green",
+        )
+        if result.get("dry_run"):
+            click.echo(f"cmd: {' '.join(result.get('cmd') or [])}")
+    else:
+        raise click.ClickException(result.get("error") or result.get("message") or "inject-gc failed")
+
+
+# ---------------------------------------------------------------------------
 # evaluate
 # ---------------------------------------------------------------------------
 

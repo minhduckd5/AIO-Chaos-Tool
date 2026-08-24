@@ -3,6 +3,13 @@ kind: NetworkChaos
 metadata:
   name: {{ experiment_name | lower | replace(" ", "-") }}
   namespace: {{ namespace | default("default") }}
+  labels:
+    app.kubernetes.io/managed-by: {{ managed_by | default("chaosgen") }}
+    chaosgen.io/ephemeral: "{{ ephemeral | default("true") }}"
+    chaosgen.io/experiment: {{ experiment_label | default("chaosgen") }}
+{% if run_id %}
+    chaosgen.io/run-id: "{{ run_id }}"
+{% endif %}
 spec:
   action: {{ action | default("delay") }}
   mode: {{ mode | default("one") }}
@@ -10,7 +17,7 @@ spec:
     namespaces:
       - {{ namespace | default("default") }}
     labelSelectors:
-      app: {{ target_name }}
+      {{ label_key | default("app") }}: {{ target_name }}
   {% if action == "delay" %}
   delay:
     latency: "{{ latency | default('100ms') }}"
@@ -21,4 +28,4 @@ spec:
     loss: "{{ loss_percent | default('10') }}"
     correlation: "{{ correlation | default('0') }}"
   {% endif %}
-  duration: "{{ duration | default('30s') }}"
+  duration: "{{ duration }}"

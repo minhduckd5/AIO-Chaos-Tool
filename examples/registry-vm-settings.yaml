@@ -59,8 +59,24 @@ ranking:
 safety:
   max_affected_nodes: 2
   max_affected_pods_percent: 20
+  max_services_per_suite: 3
   blocked_namespaces: [kube-system, monitoring]
   blocked_services: [database-master]
+
+# Real K8s inject (Lens-parity: kubeconfig → API server)
+inject:
+  enabled: true
+  kubeconfig: ~/.kube/config
+  # context: default
+  default_namespace: default
+  label_key: app
+  dry_run: true
+  chaos_backend: chaosmesh
+  kubectl_timeout_s: 30
+  delete_force_on_timeout: true
+  prefer_self_expiring_chaos: true
+  managed_by_label: chaosgen
+  ephemeral_label: "true"
 
 # Gatekeeper (?? real ??) — frequency x severity matrix + strict log boost (P1)
 gatekeeper:
