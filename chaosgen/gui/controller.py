@@ -136,6 +136,28 @@ class AppController(QObject):
         )
         self._spawn(worker)
 
+    # --- START MODIFICATION ---
+    # Phase B: multi-service suite runner for cascading blast demos
+    def run_experiment_suite_async(self, experiments, delay_seconds: float = 0.0):
+        label = f"suite×{len(experiments)}"
+        self.experiment_started.emit(label)
+        worker = AsyncWorker(
+            self.orchestrator.run_experiment_suite,
+            experiments,
+            delay_seconds=delay_seconds,
+        )
+        worker.signals.finished.connect(
+            lambda result: self.experiment_finished.emit(
+                True,
+                f"Suite completed: {(result or {}).get('outcome', 'done')}",
+            )
+        )
+        worker.signals.error.connect(
+            lambda err: self.experiment_finished.emit(False, err)
+        )
+        self._spawn(worker)
+    # --- END MODIFICATION ---
+
     def run_advisor_async(self, advisor, lookback_hours: int):
         self.advisor_started.emit()
         worker = AsyncWorker(advisor.analyze_and_recommend, lookback_hours=lookback_hours)

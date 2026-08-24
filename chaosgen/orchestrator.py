@@ -52,9 +52,13 @@ class ChaosOrchestrator:
         self._cg_settings = None
         self._run_id: Optional[str] = None
         self.active_manifests: List[Dict[str, Any]] = []
+        self.suite_manifests: List[Dict[str, Any]] = []
         self.active_plans = []
         self.last_rollback_status: Optional[str] = None
         self.last_outcome: Optional[str] = None
+        self._suite_mode: bool = False
+        self._suite_abort: bool = False
+        self.suite_results: List[Dict[str, Any]] = []
 
         from chaosgen.config.settings import load_settings
         from chaosgen.safety.governance import SafetyPolicy
@@ -200,12 +204,118 @@ class ChaosOrchestrator:
     def run_experiment(self, experiment: ChaosExperiment):
         """Entry point to run a full chaos experiment."""
         self.current_experiment = experiment
-        self.active_manifests = []
-        self.last_rollback_status = None
-        self.last_outcome = None
-        self._run_id = str(uuid.uuid4())
+        if not self._suite_mode:
+            self.active_manifests = []
+            self.suite_manifests = []
+            self._run_id = str(uuid.uuid4())
+            self.last_rollback_status = None
+            self.last_outcome = None
+        else:
+            self.active_manifests = []
+            self.last_outcome = None
+        if not self._run_id:
+            self._run_id = str(uuid.uuid4())
         self.logger.info("Starting experiment: %s (run_id=%s)", experiment.name, self._run_id)
         self.start_experiment()
+
+    def run_experiment_suite(
+        self,
+        experiments: List[ChaosExperiment],
+        *,
+        delay_seconds: float = 0.0,
+    ) -> Dict[str, Any]:
+        """
+        Phase B — cascading multi-service blast.
+
+        Runs experiments sequentially under one run_id. Defers CR cleanup until
+        suite end (or HALT). Caps length via safety.max_services_per_suite.
+        """
+        if not experiments:
+            raise ValueError("experiment suite is empty")
+
+        max_n = 3
+        if self._cg_settings and self._cg_settings.safety:
+            max_n = int(self._cg_settings.safety.max_services_per_suite)
+        if len(experiments) > max_n:
+            raise ValueError(
+                f"suite size {len(experiments)} exceeds max_services_per_suite={max_n}"
+            )
+
+        self._suite_mode = True
+        self._suite_abort = False
+        self.suite_manifests = []
+        self.suite_results = []
+        self.active_manifests = []
+        self._run_id = str(uuid.uuid4())
+        self.last_rollback_status = None
+        self.last_outcome = None
+
+        self.logger.info(
+            "Starting experiment suite: %d target(s), run_id=%s, delay=%ss",
+            len(experiments),
+            self._run_id,
+            delay_seconds,
+        )
+
+        try:
+            for i, exp in enumerate(experiments):
+                if self._suite_abort:
+                    self.logger.warning("Suite aborted before remaining targets")
+                    self.last_outcome = "PARTIAL"
+                    break
+                if i > 0 and delay_seconds > 0:
+                    time.sleep(float(delay_seconds))
+                try:
+                    self.run_experiment(exp)
+                    self.suite_results.append(
+                        {
+                            "name": exp.name,
+                            "target": exp.target.name,
+                            "outcome": self.last_outcome or "PASS",
+                        }
+                    )
+                    if self.last_outcome in ("INCONCLUSIVE", "ABANDONED"):
+                        self._suite_abort = True
+                        break
+                    if self.state not in ("idle",):
+                        # Unexpected stuck state — abort suite
+                        self._suite_abort = True
+                        self.last_outcome = "PARTIAL"
+                        break
+                except Exception as exc:
+                    self.logger.error("Suite member failed: %s", exc)
+                    self.suite_results.append(
+                        {
+                            "name": exp.name,
+                            "target": exp.target.name,
+                            "outcome": "FAIL",
+                            "error": str(exc),
+                        }
+                    )
+                    self._suite_abort = True
+                    self.last_outcome = "PARTIAL"
+                    break
+        finally:
+            # Shared rollback for all suite CRs
+            self.active_manifests = list(self.suite_manifests) + list(self.active_manifests)
+            self.suite_manifests = []
+            self._suite_mode = False
+            if self.active_manifests:
+                status = self._rollback_manifests(best_effort=False)
+                if status != "pass" and self.last_outcome not in (
+                    "INCONCLUSIVE",
+                    "ABANDONED",
+                    "FAIL",
+                ):
+                    self.last_outcome = "PARTIAL"
+            self._suite_abort = False
+
+        return {
+            "run_id": self._run_id,
+            "outcome": self.last_outcome or "PASS",
+            "rollback": self.last_rollback_status,
+            "results": list(self.suite_results),
+        }
 
     def _default_steady_state(self) -> Dict[str, Any]:
         """Prom-based default when form does not hardcode localhost health."""
@@ -451,7 +561,11 @@ class ChaosOrchestrator:
                 self.logger.warning("History update_verdict failed: %s", exc)
 
         # Best-effort cleanup of remaining CRs after verify window
-        if self.active_manifests:
+        if self._suite_mode:
+            # Defer delete until suite end so cascading faults stay active
+            self.suite_manifests.extend(self.active_manifests)
+            self.active_manifests = []
+        elif self.active_manifests:
             self._rollback_manifests(best_effort=True)
 
         self.verification_complete()
@@ -517,6 +631,11 @@ class ChaosOrchestrator:
         if self.dead_mans_switch:
             self.dead_mans_switch.stop()
             self.dead_mans_switch = None
+
+        if self._suite_mode:
+            self._suite_abort = True
+            self.active_manifests = list(self.suite_manifests) + list(self.active_manifests)
+            self.suite_manifests = []
 
         status = self._rollback_manifests(best_effort=False)
         if status != "pass" and not self.last_outcome:

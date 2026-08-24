@@ -185,17 +185,27 @@ class ExperimentsView(QWidget):
             self._target_type.setCurrentIndex(idx)
         self._target_ns = QLineEdit("default")
         self._style_input(self._target_ns)
-        self._service_combo = QComboBox()
-        self._service_combo.setEditable(True)
-        self._service_combo.addItem("frontend")
+        self._service_list = QListWidget()
+        self._service_list.setSelectionMode(QListWidget.ExtendedSelection)
+        self._service_list.setMinimumHeight(100)
+        self._service_list.addItem("frontend")
+        self._service_list.item(0).setSelected(True)
         self._label_key = QLineEdit("app")
         self._style_input(self._label_key)
+        self._suite_delay = QSpinBox()
+        self._suite_delay.setRange(0, 300)
+        self._suite_delay.setValue(0)
+        self._suite_delay.setSuffix(" s")
         self._refresh_svc_btn = QPushButton("Refresh services")
         self._refresh_svc_btn.clicked.connect(self._on_refresh_services)
+        self._svc_hint = QLabel("Ctrl/Cmd+click for multi-service suite (cascading)")
+        self._svc_hint.setStyleSheet(f"color: {Colors.TEXT_MUTED}; font-size: 11px;")
         target_fl.addRow("Type:", self._target_type)
         target_fl.addRow("Namespace:", self._target_ns)
-        target_fl.addRow("Service:", self._service_combo)
+        target_fl.addRow("Services:", self._service_list)
+        target_fl.addRow("", self._svc_hint)
         target_fl.addRow("Label key:", self._label_key)
+        target_fl.addRow("Suite stagger:", self._suite_delay)
         target_fl.addRow("", self._refresh_svc_btn)
         target_card.layout().addLayout(target_fl)
         form_layout.addWidget(target_card)
@@ -302,22 +312,128 @@ class ExperimentsView(QWidget):
             "list_workloads",
             {"namespace": self._target_ns.text().strip() or "default"},
         )
-        current = self._service_combo.currentText()
-        self._service_combo.clear()
+        selected = {i.text() for i in self._service_list.selectedItems()}
+        self._service_list.clear()
         workloads = result.get("workloads") or []
         if not result.get("success"):
             self._controller.log_message.emit(
                 f"Refresh services failed: {result.get('error') or result.get('message')}"
             )
-            self._service_combo.addItem(current or "frontend")
+            self._service_list.addItem("frontend")
+            self._service_list.item(0).setSelected(True)
             return
         for name in workloads:
-            self._service_combo.addItem(name)
-        if current:
-            idx = self._service_combo.findText(current)
-            if idx >= 0:
-                self._service_combo.setCurrentIndex(idx)
+            item = QListWidgetItem(name)
+            self._service_list.addItem(item)
+            if name in selected:
+                item.setSelected(True)
+        if self._service_list.count() and not self._service_list.selectedItems():
+            self._service_list.item(0).setSelected(True)
         self._controller.log_message.emit(f"Loaded {len(workloads)} workload(s)")
+
+    def _selected_services(self) -> list[str]:
+        names = [i.text().strip() for i in self._service_list.selectedItems() if i.text().strip()]
+        return names
+
+    def _max_services_per_suite(self) -> int:
+        try:
+            from chaosgen.config.settings import load_settings
+
+            return int(load_settings().safety.max_services_per_suite)
+        except Exception:
+            return 3
+
+    def _build_faults(self) -> list[FaultSpec]:
+        faults: list[FaultSpec] = []
+        for row in self._fault_row_widgets:
+            ftype = row["ftype"].currentText()
+            common = {
+                "fault_type": FaultType(ftype),
+                "duration": row["duration"].text().strip() or "30s",
+            }
+            if ftype in ("network_latency", "packet_loss"):
+                faults.append(
+                    NetworkFaultSpec(
+                        **common,
+                        latency=row["latency"].text().strip() or "100ms",
+                        jitter="10ms",
+                        loss_percentage=10.0 if ftype == "packet_loss" else None,
+                    )
+                )
+            elif ftype == "process_kill":
+                faults.append(
+                    ProcessFaultSpec(
+                        **common,
+                        signal=row["signal"].text().strip() or "SIGKILL",
+                    )
+                )
+            elif ftype == "resource_exhaustion":
+                faults.append(ResourceFaultSpec(**common, cpu_percent=80))
+            else:
+                faults.append(FaultSpec(**common))
+        return faults
+
+    def _on_submit(self):
+        try:
+            services = self._selected_services()
+            if not services:
+                raise ValueError("Select at least one microservice target")
+            max_n = self._max_services_per_suite()
+            if len(services) > max_n:
+                raise ValueError(
+                    f"Selected {len(services)} services exceeds max_services_per_suite={max_n}"
+                )
+            label_key = self._label_key.text().strip() or "app"
+            ns = self._target_ns.text().strip() or "default"
+            faults = self._build_faults()
+            if not faults:
+                raise ValueError("Add at least one fault")
+
+            self._kubectl_module()
+            base_name = self._name_input.text().strip() or "suite"
+            desc = self._desc_input.text()
+
+            experiments: list[ChaosExperiment] = []
+            for svc in services:
+                experiments.append(
+                    ChaosExperiment(
+                        name=f"{base_name}-{svc}" if len(services) > 1 else base_name,
+                        description=desc,
+                        target=TargetSpec(
+                            type=TargetType(self._target_type.currentText()),
+                            name=svc,
+                            namespace=ns,
+                            selector={label_key: svc},
+                        ),
+                        faults=faults,
+                        rollback=self._rollback.isChecked(),
+                        steady_state_check=None,
+                    )
+                )
+
+            if len(experiments) == 1:
+                self._controller.run_experiment_async(experiments[0])
+                label = experiments[0].name
+            else:
+                self._controller.run_experiment_suite_async(
+                    experiments,
+                    delay_seconds=float(self._suite_delay.value()),
+                )
+                label = f"suite×{len(experiments)}"
+
+            self._history_list.insertItem(
+                0,
+                QListWidgetItem(
+                    f"[STARTED] {label} → {', '.join(services)} ({len(faults)} fault(s))"
+                ),
+            )
+            self._controller.log_message.emit(
+                f"Experiment started: {label} targets={services} faults={len(faults)}"
+            )
+            self._set_lifecycle_phase("Injecting")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Validation Error", str(e))
 
     def _add_fault_row(self, fault_type: str = "process_kill") -> None:
         row = QWidget()
@@ -381,78 +497,6 @@ class ExperimentsView(QWidget):
     def _update_params(self, fault_type):
         # Kept for compatibility; multi-fault rows carry their own params.
         return
-
-    def _on_submit(self):
-        try:
-            service = self._service_combo.currentText().strip()
-            if not service:
-                raise ValueError("Select or enter a microservice target")
-            label_key = self._label_key.text().strip() or "app"
-            ns = self._target_ns.text().strip() or "default"
-            target = TargetSpec(
-                type=TargetType(self._target_type.currentText()),
-                name=service,
-                namespace=ns,
-                selector={label_key: service},
-            )
-
-            faults: list[FaultSpec] = []
-            for row in self._fault_row_widgets:
-                ftype = row["ftype"].currentText()
-                common = {
-                    "fault_type": FaultType(ftype),
-                    "duration": row["duration"].text().strip() or "30s",
-                }
-                if ftype in ("network_latency", "packet_loss"):
-                    faults.append(
-                        NetworkFaultSpec(
-                            **common,
-                            latency=row["latency"].text().strip() or "100ms",
-                            jitter="10ms",
-                            loss_percentage=10.0 if ftype == "packet_loss" else None,
-                        )
-                    )
-                elif ftype == "process_kill":
-                    faults.append(
-                        ProcessFaultSpec(
-                            **common,
-                            signal=row["signal"].text().strip() or "SIGKILL",
-                        )
-                    )
-                elif ftype == "resource_exhaustion":
-                    faults.append(ResourceFaultSpec(**common, cpu_percent=80))
-                else:
-                    faults.append(FaultSpec(**common))
-
-            if not faults:
-                raise ValueError("Add at least one fault")
-
-            # Persist dry-run / kubeconfig onto module for this run
-            self._kubectl_module()
-
-            experiment = ChaosExperiment(
-                name=self._name_input.text(),
-                description=self._desc_input.text(),
-                target=target,
-                faults=faults,
-                rollback=self._rollback.isChecked(),
-                steady_state_check=None,  # orchestrator uses Prom default
-            )
-
-            self._controller.run_experiment_async(experiment)
-            self._history_list.insertItem(
-                0,
-                QListWidgetItem(
-                    f"[STARTED] {experiment.name} → {service} ({len(faults)} fault(s))"
-                ),
-            )
-            self._controller.log_message.emit(
-                f"Experiment created: {experiment.name} target={service} faults={len(faults)}"
-            )
-            self._set_lifecycle_phase("Injecting")
-
-        except Exception as e:
-            QMessageBox.critical(self, "Validation Error", str(e))
 
     def _connect_signals(self):
         self._controller.experiment_finished.connect(self._on_experiment_done)
