@@ -98,7 +98,9 @@ def test_translator_delete_pod_backend():
 
 
 def test_kubectl_timeout_returns_error():
-    mod = KubectlChaosModule({"dry_run": False, "kubectl_timeout_s": 1})
+    mod = KubectlChaosModule(
+        {"dry_run": False, "kubectl_timeout_s": 1, "client": "kubectl"}
+    )
     with patch("chaosgen.modules.kubectl_chaos.subprocess.run") as run:
         import subprocess
 
@@ -109,14 +111,16 @@ def test_kubectl_timeout_returns_error():
 
 
 def test_kubectl_dry_run_skips_mutation():
-    mod = KubectlChaosModule({"dry_run": True})
+    mod = KubectlChaosModule({"dry_run": True, "client": "kubectl"})
     result = mod.execute("apply_manifest", {"manifest_path": __file__})
     assert result["success"] is True
     assert result["dry_run"] is True
 
 
 def test_gc_ephemeral_label_selector():
-    mod = KubectlChaosModule({"dry_run": True, "managed_by_label": "chaosgen"})
+    mod = KubectlChaosModule(
+        {"dry_run": True, "managed_by_label": "chaosgen", "client": "kubectl"}
+    )
     result = mod.execute("gc_ephemeral", {})
     assert result["success"] is True
     cmd = " ".join(result["cmd"])

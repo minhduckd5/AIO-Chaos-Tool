@@ -145,6 +145,14 @@ class ExperimentsView(QWidget):
         self._context.setEditable(True)
         self._dry_run = QCheckBox("Dry-run (no cluster mutation)")
         self._dry_run.setChecked(True)
+        self._ssh_host = QLineEdit("")
+        self._ssh_host.setPlaceholderText("optional — only if API :6443 unreachable")
+        self._style_input(self._ssh_host)
+        self._ssh_user = QLineEdit("")
+        self._style_input(self._ssh_user)
+        self._ssh_identity = QLineEdit("")
+        self._ssh_identity.setPlaceholderText("~/.ssh/id_ed25519")
+        self._style_input(self._ssh_identity)
         self._test_conn_btn = QPushButton("Test connection")
         self._test_conn_btn.clicked.connect(self._on_test_connection)
         self._refresh_ctx_btn = QPushButton("Refresh contexts")
@@ -156,6 +164,9 @@ class ExperimentsView(QWidget):
         conn_row.addWidget(self._refresh_ctx_btn)
         conn_fl.addRow("", conn_row)
         conn_fl.addRow("", self._dry_run)
+        conn_fl.addRow("SSH bastion:", self._ssh_host)
+        conn_fl.addRow("SSH user:", self._ssh_user)
+        conn_fl.addRow("SSH identity:", self._ssh_identity)
         self._conn_status = QLabel("Status: not tested")
         self._conn_status.setStyleSheet(f"color: {Colors.TEXT_MUTED};")
         conn_fl.addRow("", self._conn_status)
@@ -263,6 +274,13 @@ class ExperimentsView(QWidget):
             self._dry_run.setChecked(bool(inj.dry_run))
             self._target_ns.setText(inj.default_namespace or "default")
             self._label_key.setText(inj.label_key or "app")
+            bastion = inj.ssh_bastion
+            if bastion and bastion.host:
+                self._ssh_host.setText(bastion.host)
+            if bastion and bastion.user:
+                self._ssh_user.setText(bastion.user)
+            if bastion and bastion.identity_file:
+                self._ssh_identity.setText(bastion.identity_file)
         except Exception:
             pass
 
@@ -277,6 +295,14 @@ class ExperimentsView(QWidget):
         mod.context = ctx or None
         mod.dry_run = self._dry_run.isChecked()
         mod.default_namespace = self._target_ns.text().strip() or "default"
+        ssh_host = self._ssh_host.text().strip()
+        mod.ssh_host = ssh_host or None
+        mod.ssh_user = self._ssh_user.text().strip() or None
+        ident = self._ssh_identity.text().strip()
+        mod.ssh_identity_file = ident or None
+        mod.ssh_enabled = bool(ssh_host)
+        mod.ssh_auto_on_fail = True
+        mod.invalidate_client()
         return mod
 
     def _on_test_connection(self) -> None:
@@ -286,7 +312,9 @@ class ExperimentsView(QWidget):
             return
         result = mod.execute("test_connection", {})
         if result.get("success"):
-            self._conn_status.setText("Status: OK — cluster reachable")
+            backend = result.get("backend") or ""
+            via = " via SSH bastion" if result.get("bastion") else ""
+            self._conn_status.setText(f"Status: OK — cluster reachable ({backend}){via}")
             self._conn_status.setStyleSheet(f"color: {Colors.SUCCESS};")
             self._controller.log_message.emit(result.get("message") or "connection OK")
         else:

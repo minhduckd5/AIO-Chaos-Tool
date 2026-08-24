@@ -263,6 +263,21 @@ class SafetySettings(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class SshBastionSettings(BaseModel):
+    """Optional OpenSSH local-forward when the API is not reachable directly."""
+
+    enabled: bool = False
+    auto_on_api_fail: bool = True
+    host: str | None = None
+    user: str | None = None
+    port: int = Field(default=22, ge=1, le=65535)
+    identity_file: str | None = None
+    remote_api_host: str = "127.0.0.1"
+    remote_api_port: int = Field(default=6443, ge=1, le=65535)
+    local_port: int = Field(default=0, ge=0, le=65535)
+    skip_tls_verify: bool = False
+
+
 class InjectSettings(BaseModel):
     """Remote Kubernetes inject via kubeconfig (Lens-parity API path)."""
 
@@ -273,11 +288,14 @@ class InjectSettings(BaseModel):
     label_key: str = "app"
     dry_run: bool = False
     chaos_backend: Literal["chaosmesh", "delete_pod"] = "chaosmesh"
+    # auto: official client first, kubectl subprocess fallback
+    client: Literal["auto", "native", "kubectl"] = "auto"
     kubectl_timeout_s: int = Field(default=30, ge=5, le=600)
     delete_force_on_timeout: bool = True
     prefer_self_expiring_chaos: bool = True
     managed_by_label: str = "chaosgen"
     ephemeral_label: str = "true"
+    ssh_bastion: SshBastionSettings = Field(default_factory=SshBastionSettings)
 
 
 # ---------------------------------------------------------------------------

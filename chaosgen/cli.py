@@ -1183,9 +1183,12 @@ def verdict_cmd(criteria_file, prometheus_url, no_poll, experiment_name, save_pa
 
 @main.command("inject-gc")
 @click.option("--config", default=None, help="Path to settings YAML.")
-@click.option("--dry-run", is_flag=True, default=False, help="Force dry-run on kubectl module.")
+@click.option("--kubeconfig", default=None, help="Override inject.kubeconfig.")
+@click.option("--context", default=None, help="Override kubeconfig context.")
+@click.option("--dry-run", is_flag=True, default=False, help="List matching CRs; do not delete.")
+@click.option("--list-only", is_flag=True, default=False, help="Same as --dry-run: enumerate only.")
 @click.option("--namespace", default=None, help="Limit GC to one namespace (default: all).")
-def inject_gc(config, dry_run, namespace):
+def inject_gc(config, kubeconfig, context, dry_run, list_only, namespace):
     """Delete ephemeral Chaos Mesh CRs owned by ChaosGen (managed-by label)."""
     from chaosgen.orchestrator import ChaosOrchestrator
 
@@ -1193,19 +1196,40 @@ def inject_gc(config, dry_run, namespace):
     kube = orch.get_module("kubectl-chaos")
     if not kube:
         raise click.ClickException("kubectl-chaos module not available")
-    if dry_run:
+    if kubeconfig:
+        kube.kubeconfig = kube._expand(kubeconfig)
+        kube.invalidate_client()
+    if context:
+        kube.context = context
+        kube.invalidate_client()
+    if dry_run or list_only:
         kube.dry_run = True
-    result = kube.execute(
-        "gc_ephemeral",
-        {"namespace": namespace} if namespace else {},
-    )
+    params: dict = {}
+    if namespace:
+        params["namespace"] = namespace
+    if list_only:
+        params["list_only"] = True
+    action = "list_ephemeral" if list_only else "gc_ephemeral"
+    result = kube.execute(action, params)
+    items = result.get("items") or []
+    if items:
+        click.echo(f"selector: {result.get('selector') or ''}")
+        for item in items:
+            click.echo(
+                f"  {item.get('namespace')}/{item.get('kind')}/{item.get('name')}"
+            )
     if result.get("success"):
         click.secho(
             result.get("message") or "inject-gc completed",
             fg="green",
         )
         if result.get("dry_run"):
-            click.echo(f"cmd: {' '.join(result.get('cmd') or [])}")
+            cmd = result.get("cmd")
+            if cmd:
+                click.echo(f"cmd: {' '.join(cmd)}")
+        backend = result.get("backend")
+        if backend:
+            click.echo(f"backend: {backend}")
     else:
         raise click.ClickException(result.get("error") or result.get("message") or "inject-gc failed")
 

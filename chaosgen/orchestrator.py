@@ -152,16 +152,22 @@ class ChaosOrchestrator:
         inject_cfg: Dict[str, Any] = {}
         if self._cg_settings and self._cg_settings.inject:
             inj = self._cg_settings.inject
+            # --- START MODIFICATION ---
+            # Phase C: native client + optional SSH bastion config
+            bastion = inj.ssh_bastion
             inject_cfg = {
                 "kubeconfig": inj.kubeconfig,
                 "context": inj.context,
                 "default_namespace": inj.default_namespace,
                 "dry_run": inj.dry_run,
+                "client": inj.client,
                 "kubectl_timeout_s": inj.kubectl_timeout_s,
                 "delete_force_on_timeout": inj.delete_force_on_timeout,
                 "managed_by_label": inj.managed_by_label,
                 "ephemeral_label": inj.ephemeral_label,
+                "ssh_bastion": bastion.model_dump() if bastion else {},
             }
+            # --- END MODIFICATION ---
         for module_name, module_class in self.MODULE_REGISTRY.items():
             config = module_configs.get(module_name, {})
             if module_name == "kubectl-chaos":

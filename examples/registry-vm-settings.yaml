@@ -72,11 +72,22 @@ inject:
   label_key: app
   dry_run: true
   chaos_backend: chaosmesh
+  client: auto   # native kubernetes client first; kubectl fallback
   kubectl_timeout_s: 30
   delete_force_on_timeout: true
   prefer_self_expiring_chaos: true
   managed_by_label: chaosgen
   ephemeral_label: "true"
+  # SSH bastion — only if Windows cannot reach :6443 directly
+  ssh_bastion:
+    enabled: false
+    auto_on_api_fail: true
+    # host: 192.168.31.220
+    # user: root
+    # identity_file: ~/.ssh/id_ed25519
+    remote_api_host: 127.0.0.1
+    remote_api_port: 6443
+    skip_tls_verify: false
 
 # Gatekeeper (?? real ??) — frequency x severity matrix + strict log boost (P1)
 gatekeeper:
