@@ -1,0 +1,66 @@
+# ChaosGen WS-5 — modular monolith arena (P0 live inject via Pumba)
+# Project name must match connect.docker.project_name in example settings.
+name: chaosgen-monolith
+
+services:
+  monolith-app:
+    image: nginx:1.27-alpine
+    ports:
+      - "18081:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    restart: always
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  module-api:
+    image: nginx:1.27-alpine
+    ports:
+      - "18082:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      module-db:
+        condition: service_started
+    restart: always
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  module-db:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  blackbox:
+    image: prom/blackbox-exporter:v0.25.0
+    restart: always
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    ports:
+      - "19090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    depends_on:
+      - blackbox
+      - monolith-app
+      - module-api
+    restart: always

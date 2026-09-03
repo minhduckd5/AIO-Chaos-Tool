@@ -1081,13 +1081,42 @@ class AdvisorView(QWidget):
             )
 
         try:
+            from chaosgen.advisor.report_store import load_verdict_report
+            from chaosgen.schemas.scenarios import ExperimentVerdict
+
+            try:
+                last_verdict = load_verdict_report().verdict
+            except Exception:
+                last_verdict = None
+            if last_verdict is None:
+                QMessageBox.warning(
+                    self,
+                    "Cannot promote",
+                    "No ExpectationVerdictReport found. Run inject/verdict first "
+                    "(promote requires PASS).",
+                )
+                return
+            if last_verdict != ExperimentVerdict.PASS:
+                QMessageBox.warning(
+                    self,
+                    "Cannot promote",
+                    f"Expectation Verdict is {last_verdict.value}; only PASS can promote.",
+                )
+                return
+
+            from chaosgen.config.connect_routing import architecture_from_settings
+            from chaosgen.config.settings import load_settings
+
+            promote_arch = architecture_from_settings(load_settings())
             entry = CatalogPromoter(history_store=get_default_history_store()).promote(
                 desc,
                 dialog.selected_experiment(),
                 approved_by=dialog.approved_by(),
+                verdict=last_verdict,
                 acceptance_criteria=dialog.acceptance_criteria(),
                 name=dialog.catalog_name(),
                 description_row_id=description_row_id,
+                architecture=promote_arch,
             )
         except (PromoteError, ValueError) as exc:
             QMessageBox.critical(self, "Promote failed", str(exc))

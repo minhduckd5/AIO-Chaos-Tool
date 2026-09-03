@@ -56,6 +56,7 @@ class ExpectationVerdictReport(BaseModel):
     evaluated_at: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     def to_prompt_block(self) -> str:
         lines = [

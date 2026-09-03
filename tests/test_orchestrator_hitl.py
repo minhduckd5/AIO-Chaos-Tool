@@ -72,3 +72,52 @@ class TestHITLApprovalGate:
         assert orch.state == "pending_approval"
         orch.approve_and_run(1)
         assert orch.current_experiment.name == "ai-exp-1"
+
+
+class TestGatedInjectSafety:
+    """G2/G3: inject-time blast radius + dead man's switch arming."""
+
+    def test_blocked_namespace_rejected_on_approve_path(self):
+        orch = ChaosOrchestrator()
+        bad = ChaosExperiment(
+            name="kube-system-hit",
+            target=TargetSpec(
+                type=TargetType.SERVICE, name="coredns", namespace="kube-system"
+            ),
+            faults=[
+                ProcessFaultSpec(fault_type=FaultType.PROCESS_KILL, duration="10s")
+            ],
+        )
+        orch.run_ai_experiment(
+            AdvisorReport(anomalies_found=1, generated_experiments=[bad])
+        )
+        assert orch.state == "pending_approval"
+        orch.approve_and_run(0)
+        assert orch.last_outcome == "FAIL"
+        assert orch.state == "idle"
+
+    def test_execute_injection_revalidates_blast_radius(self):
+        orch = ChaosOrchestrator()
+        orch.current_experiment = ChaosExperiment(
+            name="tampered",
+            target=TargetSpec(
+                type=TargetType.SERVICE, name="coredns", namespace="kube-system"
+            ),
+            faults=[
+                ProcessFaultSpec(fault_type=FaultType.PROCESS_KILL, duration="10s")
+            ],
+        )
+        orch._execute_injection()
+        assert orch.last_outcome == "FAIL"
+
+    def test_dead_mans_switch_starts_when_check_present(self):
+        orch = ChaosOrchestrator()
+        orch.current_experiment = _make_experiment()
+        orch.current_experiment.steady_state_check = {
+            "prometheus": {"url": "http://127.0.0.1:9090", "query": "up"}
+        }
+        orch.validator.validate = lambda _c: True
+        orch._start_dead_mans_switch()
+        assert orch.dead_mans_switch is not None
+        orch._cleanup_safety()
+        assert orch.dead_mans_switch is None

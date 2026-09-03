@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from chaosgen.advisor.scenario_catalog import CatalogEntry, ScenarioCatalog
+from chaosgen.config.profile_presets import default_environment_for
 from chaosgen.schemas.discovery import ArchitectureType
 from chaosgen.schemas.faults import FaultType
 
@@ -38,10 +39,14 @@ class ScenarioCatalogView(QWidget):
     Pre-built scenario catalog browser.
 
     Signals:
-        scenario_queued(ChaosExperiment): emitted when user clicks "Add to Queue".
+        scenario_queued(experiment, metadata): catalog payload plus GUI-only
+        architecture / suggested environment (does not mutate ChaosExperiment).
     """
 
-    scenario_queued = Signal(object)   # ChaosExperiment
+    # --- START MODIFICATION ---
+    # GUI-only metadata rides a second signal arg; ChaosExperiment schema stays unchanged.
+    # --- END MODIFICATION ---
+    scenario_queued = Signal(object, dict)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -224,7 +229,20 @@ class ScenarioCatalogView(QWidget):
         entry = self._entries[row]
         try:
             exp = entry.build()
-            self.scenario_queued.emit(exp)
+            # --- START MODIFICATION ---
+            # Attach catalog classification for Experiments staging (env combo).
+            # --- END MODIFICATION ---
+            arch = getattr(entry, "architecture", ArchitectureType.MICROSERVICES)
+            arch_value = getattr(arch, "value", str(arch or "microservices"))
+            try:
+                env_value = default_environment_for(arch).value
+            except Exception:
+                env_value = "kubernetes"
+            metadata = {
+                "architecture": arch_value,
+                "environment": env_value,
+            }
+            self.scenario_queued.emit(exp, metadata)
             logger.info("Queued catalog scenario: %s", exp.name)
         except Exception as exc:
             logger.error("Failed to build catalog experiment: %s", exc)

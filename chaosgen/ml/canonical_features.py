@@ -20,7 +20,67 @@ logger = logging.getLogger(__name__)
 CANONICAL_SCHEMA_VERSION = "1"
 DEFAULT_RULES_PATH = Path("examples/canonical_features.yaml")
 
-_STAT_SUFFIXES = ("mean", "std", "roc", "p95")
+_STAT_SUFFIXES = ("mean", "std", "roc", "p95", "p99")
+
+# MODIFIED: per-service pooling for boutique/lab golden signals (Phase 2 RCA attribution)
+_PER_SERVICE_SIGNALS = frozenset({"errors", "request_rate", "latency", "availability"})
+_PASSTHROUGH_PREFIXES = (
+    "custom__error",
+    "custom__request_rate",
+    "custom__latency",
+    "custom__error_ratio",
+    "custom__replicas",
+    "custom__frontend_health",
+    "custom__span_error",
+)
+
+# Signal bucket names — never treat as microservice identities
+_NON_SERVICE_TOKENS = frozenset({
+    "custom", "canonical", "latency", "memory", "cpu", "disk", "network",
+    "errors", "request", "request_rate", "error_rate", "error_ratio",
+    "availability", "saturation", "log_volume", "log_error_rate",
+    "mean", "std", "roc", "p95", "p99", "unknown",
+})
+
+
+def is_concrete_service(name: str | None) -> bool:
+    """Return True when *name* looks like a microservice identity, not a signal bucket."""
+    if not name:
+        return False
+    token = str(name).strip().lower()
+    return bool(token) and token not in _NON_SERVICE_TOKENS and "__" not in token
+
+
+def extract_service_from_column(name: str) -> str | None:
+    """
+    Parse a microservice identity from a FeatureEngineer column name.
+
+    Supported shapes:
+      custom__{category}__{metric}__{service}__{stat}
+      canonical__{signal}__{service}__{stat}
+      {metric}__{service}__{stat}
+    """
+    parts = str(name).split("__")
+    if len(parts) < 3:
+        return None
+
+    stat = parts[-1].lower()
+    if stat not in _STAT_SUFFIXES:
+        return None
+
+    if parts[0] == "custom" and len(parts) >= 5:
+        candidate = parts[-2]
+    elif parts[0] == "canonical" and len(parts) >= 4:
+        candidate = parts[-2]
+    else:
+        candidate = parts[-2]
+
+    candidate = candidate.strip().lower()
+    if not candidate or candidate in _NON_SERVICE_TOKENS:
+        return None
+    if candidate.startswith("boutique:") or ":" in candidate:
+        return None
+    return candidate
 
 
 def _project_root() -> Path:
@@ -125,18 +185,33 @@ class CanonicalFeatureMapper:
             return pd.DataFrame(columns=self.canonical_columns)
 
         buckets: dict[str, list[pd.Series]] = {col: [] for col in self.canonical_columns}
+        per_service_buckets: dict[str, list[pd.Series]] = {}
+        passthrough: dict[str, pd.Series] = {}
         unmapped = 0
 
         for col in raw_df.columns:
-            signal, stat = self.classify_column(str(col))
+            col_str = str(col)
+            if col_str.startswith(_PASSTHROUGH_PREFIXES):
+                passthrough[col_str] = raw_df[col].astype(float, errors="ignore")
+                continue
+
+            signal, stat = self.classify_column(col_str)
             if signal is None or stat is None:
                 unmapped += 1
                 continue
-            target = f"canonical__{signal}__{stat}"
-            if target not in buckets:
-                unmapped += 1
-                continue
-            buckets[target].append(raw_df[col].astype(float, errors="ignore"))
+
+            series = raw_df[col].astype(float, errors="ignore")
+            service = extract_service_from_column(col_str)
+
+            if signal in _PER_SERVICE_SIGNALS and service:
+                svc_target = f"canonical__{signal}__{service}__{stat}"
+                per_service_buckets.setdefault(svc_target, []).append(series)
+            else:
+                target = f"canonical__{signal}__{stat}"
+                if target not in buckets:
+                    unmapped += 1
+                    continue
+                buckets[target].append(series)
 
         out_data: dict[str, pd.Series] = {}
         for target, series_list in buckets.items():
@@ -150,8 +225,19 @@ class CanonicalFeatureMapper:
                 out_data[target] = stacked.mean(axis=1)
             out_data[target].name = target
 
+        for target, series_list in per_service_buckets.items():
+            stacked = pd.concat(series_list, axis=1)
+            if self.pooling == "max":
+                out_data[target] = stacked.max(axis=1)
+            else:
+                out_data[target] = stacked.mean(axis=1)
+            out_data[target].name = target
+
         result = pd.DataFrame(out_data, index=raw_df.index)
-        result = result.reindex(columns=self.canonical_columns, fill_value=0.0)
+        base = result.reindex(columns=self.canonical_columns, fill_value=0.0)
+        extras = result.drop(columns=self.canonical_columns, errors="ignore")
+        passthrough_df = pd.DataFrame(passthrough, index=raw_df.index) if passthrough else pd.DataFrame(index=raw_df.index)
+        result = pd.concat([base, extras, passthrough_df], axis=1)
         result = result.fillna(0.0)
 
         if unmapped:
@@ -161,9 +247,11 @@ class CanonicalFeatureMapper:
                 len(raw_df.columns),
             )
         logger.info(
-            "Canonical feature matrix: %s (from %d raw columns)",
+            "Canonical feature matrix: %s (from %d raw columns, %d per-service, %d passthrough)",
             result.shape,
             len(raw_df.columns),
+            len(extras.columns),
+            len(passthrough_df.columns),
         )
         return result
 

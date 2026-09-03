@@ -109,6 +109,13 @@ class TestPromoteGuards:
         desc = _description(0)
         assert promote_blocked_reason(desc) is None
 
+    def test_promote_blocked_for_non_pass_verdict(self):
+        from chaosgen.schemas.scenarios import ExperimentVerdict
+
+        desc = _description(0)
+        assert promote_blocked_reason(desc, verdict=ExperimentVerdict.FAIL) is not None
+        assert promote_blocked_reason(desc, verdict=ExperimentVerdict.PASS) is None
+
 
 class TestSummary:
     def test_summary_reports_counts(self):

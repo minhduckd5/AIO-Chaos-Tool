@@ -169,6 +169,55 @@ _CATALOG_ENTRIES: list[CatalogEntry] = [
     ),
 
     # -----------------------------------------------------------------------
+    # MODULAR MONOLITH × COUPLING / PROCESS
+    # -----------------------------------------------------------------------
+
+    CatalogEntry(
+        name="Inter-module API latency under load",
+        description=(
+            "Inject latency on module-api → module-db path — validates coupling "
+            "boundaries and timeout propagation inside a modular monolith."
+        ),
+        architecture=ArchitectureType.MODULAR_MONOLITH,
+        fault_type=FaultType.NETWORK_LATENCY,
+        tags=["module-boundary", "latency", "coupling"],
+        experiment_factory=lambda: ChaosExperiment(
+            name="module-api-latency",
+            description="Network delay on module-api container",
+            target=_make_target("module-api", TargetType.SERVICE),
+            faults=[NetworkFaultSpec(
+                fault_type=FaultType.NETWORK_LATENCY,
+                duration="60s",
+                latency="800ms",
+                jitter="100ms",
+            )],
+            rollback=True,
+        ),
+    ),
+
+    CatalogEntry(
+        name="Module container kill during request burst",
+        description=(
+            "Kill the primary monolith-app container — validates restart policy, "
+            "in-process module recovery, and shared resource contention handling."
+        ),
+        architecture=ArchitectureType.MODULAR_MONOLITH,
+        fault_type=FaultType.PROCESS_KILL,
+        tags=["module-boundary", "restart", "container"],
+        experiment_factory=lambda: ChaosExperiment(
+            name="module-container-kill",
+            description="SIGKILL on monolith-app container",
+            target=_make_target("monolith-app", TargetType.SERVICE),
+            faults=[ProcessFaultSpec(
+                fault_type=FaultType.PROCESS_KILL,
+                duration="30s",
+                signal="SIGKILL",
+            )],
+            rollback=True,
+        ),
+    ),
+
+    # -----------------------------------------------------------------------
     # MONOLITH × RESOURCE
     # -----------------------------------------------------------------------
 

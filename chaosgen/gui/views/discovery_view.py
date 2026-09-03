@@ -93,15 +93,9 @@ class DiscoveryView(QWidget):
         title.setObjectName("viewTitle")
         root.addWidget(title)
 
-        from chaosgen.config.scope import DISCOVERY_ENABLED, scope_notice
+        from chaosgen.config.scope import scope_notice
 
-        if DISCOVERY_ENABLED:
-            subtitle_text = (
-                "Hybrid discovery: reads hints from settings.yaml, probes endpoints "
-                "with auth, and merges user overrides with auto-detection."
-            )
-        else:
-            subtitle_text = scope_notice()
+        subtitle_text = scope_notice()
         subtitle = QLabel(subtitle_text)
         subtitle.setWordWrap(True)
         subtitle.setObjectName("viewSubtitle")
@@ -109,7 +103,7 @@ class DiscoveryView(QWidget):
 
         # --- Action buttons ---
         btn_row = QHBoxLayout()
-        scan_label = "Scan System" if DISCOVERY_ENABLED else "Load Microservices Profile"
+        scan_label = "Load Profile from Settings"
         self._scan_btn = QPushButton(scan_label)
         self._scan_btn.setObjectName("primaryButton")
         self._scan_btn.clicked.connect(self._on_scan)
@@ -192,9 +186,9 @@ class DiscoveryView(QWidget):
 
     def _on_scan(self) -> None:
         self._scan_btn.setEnabled(False)
-        self._scan_btn.setText("Scanning...")
+        self._scan_btn.setText("Loading...")
         self._log.clear()
-        self._log.append("Starting hybrid discovery scan...")
+        self._log.append("Loading profile from settings.yaml (form-first, no heuristic classifier)...")
         self._warnings_group.setVisible(False)
 
         self._worker = _ScanWorker(parent=self)
@@ -207,15 +201,21 @@ class DiscoveryView(QWidget):
 
         self._report = report
         self._scan_btn.setEnabled(True)
-        self._scan_btn.setText("Scan System")
+        self._scan_btn.setText("Load Profile from Settings")
 
         env = report.environment
         arch = report.architecture
         obs = report.observability
         smap = report.service_map
 
+        tier = "P0"
+        for s in report.signals:
+            if s.key == "profile_tier":
+                tier = s.value
+                break
+
         # --- Env card ---
-        env_source = "auto"
+        env_source = "user_form"
         for s in report.signals:
             if s.key == "environment_type":
                 env_source = s.source.value
@@ -229,18 +229,19 @@ class DiscoveryView(QWidget):
         )
 
         # --- Arch card ---
-        arch_source = "auto"
+        arch_source = "user_form"
         for s in report.signals:
             if s.key == "architecture_type":
                 arch_source = s.source.value
                 break
+        tier_label = "P0 Live" if tier == "P0" else "P1 Dry-run"
         self._set_card_value(
             self._arch_card,
             f"{arch.type.value} [{arch_source}]\n"
+            f"{tier_label}\n"
             f"services={arch.service_count}\n"
-            f"confidence={arch.confidence:.0%}\n"
             f"broker={'yes' if arch.has_message_broker else 'no'}",
-            ok=arch.confidence >= 0.6,
+            ok=True,
         )
 
         # --- Obs card with probe outcomes ---

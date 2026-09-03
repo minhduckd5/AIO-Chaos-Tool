@@ -94,6 +94,8 @@ class GatekeeperSettings(BaseModel):
     ignore_log_keywords: list[str] = Field(
         default_factory=lambda: ["warning", "warn", "deprecation", "info"]
     )
+    # MODIFIED: promote service-specific HTTP/5xx error signals to REAL (Phase 2 RCA)
+    service_error_boost: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -290,12 +292,53 @@ class InjectSettings(BaseModel):
     chaos_backend: Literal["chaosmesh", "delete_pod"] = "chaosmesh"
     # auto: official client first, kubectl subprocess fallback
     client: Literal["auto", "native", "kubectl"] = "auto"
+    # Primary experiment executor after CTK pivot
+    executor: Literal["ctk", "kubectl"] = "ctk"
     kubectl_timeout_s: int = Field(default=30, ge=5, le=600)
     delete_force_on_timeout: bool = True
     prefer_self_expiring_chaos: bool = True
     managed_by_label: str = "chaosgen"
     ephemeral_label: str = "true"
     ssh_bastion: SshBastionSettings = Field(default_factory=SshBastionSettings)
+
+
+# ---------------------------------------------------------------------------
+# Connect settings (WS-1 stub — WS-2 wires GUI / validation)
+# ---------------------------------------------------------------------------
+
+
+class DockerConnectSettings(BaseModel):
+    host: str | None = None
+    compose_file: str | None = None
+    project_name: str | None = None
+
+
+class BrokerConnectSettings(BaseModel):
+    type: Literal["kafka", "redpanda", "rabbitmq", "nats"] | None = None
+    bootstrap: str | None = None
+    admin_api_url: str | None = None
+    schema_registry_url: str | None = None
+    auth_token_ref: str | None = None
+
+
+class ToxiproxyConnectSettings(BaseModel):
+    api_url: str | None = None
+
+
+class KubernetesConnectSettings(BaseModel):
+    kubeconfig: str | None = None
+    context: str | None = None
+    default_namespace: str = "default"
+    ssh_bastion: SshBastionSettings = Field(default_factory=SshBastionSettings)
+
+
+class ConnectSettings(BaseModel):
+    """Runtime connect profiles (form-first; parsed from settings.yaml)."""
+
+    kubernetes: KubernetesConnectSettings = Field(default_factory=KubernetesConnectSettings)
+    docker: DockerConnectSettings = Field(default_factory=DockerConnectSettings)
+    broker: BrokerConnectSettings = Field(default_factory=BrokerConnectSettings)
+    toxiproxy: ToxiproxyConnectSettings = Field(default_factory=ToxiproxyConnectSettings)
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +372,7 @@ class ChaosGenSettings(BaseModel):
     ranking: RankingSettings = Field(default_factory=RankingSettings)
     safety: SafetySettings = Field(default_factory=SafetySettings)
     inject: InjectSettings = Field(default_factory=InjectSettings)
+    connect: ConnectSettings = Field(default_factory=ConnectSettings)
     gatekeeper: GatekeeperSettings = Field(default_factory=GatekeeperSettings)
     history: HistorySettings = Field(default_factory=HistorySettings)
 

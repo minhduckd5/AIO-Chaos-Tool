@@ -61,9 +61,16 @@ class TestScenarioCatalog:
             exp = entry.build()
             assert isinstance(exp, ChaosExperiment)
 
+    def test_get_modular_monolith_returns_entries(self, catalog):
+        entries = catalog.get(ArchitectureType.MODULAR_MONOLITH)
+        assert len(entries) >= 2
+        for e in entries:
+            assert e.architecture == ArchitectureType.MODULAR_MONOLITH
+
     def test_all_architectures_represented(self, catalog):
         architectures = catalog.all_architectures()
-        assert len(architectures) >= 3
+        assert ArchitectureType.MODULAR_MONOLITH in architectures
+        assert len(architectures) >= 4
 
     def test_get_by_tags(self, catalog):
         results = catalog.get_by_tags("timeout")

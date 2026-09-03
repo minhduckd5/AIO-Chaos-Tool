@@ -159,12 +159,19 @@ def resolve_discovery_report(
     """
     Entry point for pipeline consumers.
 
-    When discovery is scoped off, returns a focused microservices profile
-    without running environment/architecture probes.
+    When DISCOVERY_ENABLED is False (form-first profile mode):
+      - If settings.hints.architecture is set → static preset from form (no classifier).
+      - Otherwise → default microservices preset (boutique demo safe default).
+
+    When DISCOVERY_ENABLED is True → full hybrid discovery (heuristic path).
     """
+    from chaosgen.config.profile_presets import build_profile_from_hints
     from chaosgen.config.scope import DISCOVERY_ENABLED, build_focused_discovery_report
 
     if not DISCOVERY_ENABLED:
+        if settings is not None and settings.hints.architecture is not None:
+            return build_profile_from_hints(settings)
+
         report = build_focused_discovery_report()
         if settings and settings.hints.observability:
             for hint in settings.hints.observability:

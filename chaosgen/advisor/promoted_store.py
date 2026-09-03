@@ -173,9 +173,32 @@ class PromotedStore:
         """Atomically append a record under in-process + cross-process locks."""
         with _GLOBAL_LOCK:
             with self._file_lock():
-                records = self.load_records_safe()
+                # MODIFIED: retry reads on Windows lock races; do not quarantine mid-append
+                records = self._load_for_append()
                 records.append(record)
                 self._write(records)
+
+    def _load_for_append(self) -> List[PromotedCatalogRecord]:
+        """Load for append with short retries; avoid quarantine on transient locks."""
+        last_exc: Optional[BaseException] = None
+        for attempt in range(8):
+            try:
+                if not self.path.exists():
+                    return []
+                raw = json.loads(self.path.read_text(encoding="utf-8"))
+                return self._parse(raw)
+            except (json.JSONDecodeError, PromotedStoreError) as exc:
+                last_exc = exc
+                break
+            except OSError as exc:
+                last_exc = exc
+                time.sleep(0.02 * (attempt + 1))
+        if last_exc is not None:
+            logger.warning(
+                "Append load retry exhausted (%s); falling back to safe recovery",
+                last_exc,
+            )
+        return self.load_records_safe()
 
     # -- parsing / migration ----------------------------------------------
 

@@ -1,0 +1,17 @@
+{
+  "status": "completed",
+  "deviated": false,
+  "experiment": {"title": "partial failure"},
+  "run": [
+    {
+      "activity": {"type": "action", "name": "terminate-frontend"},
+      "status": "succeeded"
+    },
+    {
+      "activity": {"type": "action", "name": "terminate-shipping"},
+      "status": "failed",
+      "exception": "ActivityFailed: pod not found"
+    }
+  ],
+  "rollbacks": [{"status": "succeeded"}]
+}

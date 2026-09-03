@@ -27,7 +27,9 @@ class ActionPlan:
 class ChaosTranslator:
     """
     Unified Chaos Abstraction Layer (UCAL) Translator.
-    Prefers kubernetes when settings/inject.kubeconfig say so (Windows → remote K3s).
+
+    Form/CLI ``set_environment`` locks the tool path. Hint/auto-detect is only
+    used when no operator environment has been set.
     """
 
     def __init__(
@@ -39,15 +41,33 @@ class ChaosTranslator:
     ):
         self.inject = inject_settings
         self.hints_environment = hints_environment
+        # Form/CLI forced env wins. Auto-detect is legacy fallback only when unset.
+        self._forced = forced_env is not None
         self.env = forced_env or self._detect_environment()
 
+    def set_environment(self, env: ExecutionEnvironment) -> None:
+        """Operator-selected environment (form-first). Disables further auto-detect."""
+        self.env = env
+        self._forced = True
+
     def _detect_environment(self) -> ExecutionEnvironment:
+        """Legacy fallback when no form/CLI environment is set. Prefer set_environment()."""
+        if self._forced:
+            return self.env
+
         if self.hints_environment and str(self.hints_environment).lower() in (
             "kubernetes",
             "k8s",
             "k3s",
         ):
             return ExecutionEnvironment.KUBERNETES
+
+        if self.hints_environment and str(self.hints_environment).lower() in (
+            "docker_compose",
+            "docker",
+            "compose",
+        ):
+            return ExecutionEnvironment.DOCKER
 
         kubeconfig = None
         if self.inject is not None:
@@ -217,6 +237,7 @@ class ChaosTranslator:
                     "container": target_spec.name,
                     "delay": getattr(fault, "latency", "100ms"),
                     "duration": fault.duration,
+                    "jitter": getattr(fault, "jitter", None),
                 },
             )
         raise ValueError(f"Unsupported Docker fault: {fault.fault_type}")

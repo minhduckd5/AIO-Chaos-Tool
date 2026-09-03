@@ -121,26 +121,26 @@ class TestExperimentSerialization:
 
 class TestStoreIO:
     def test_append_and_reload_roundtrip(self, store, promoter):
-        promoter.promote(_description(), _experiment(), approved_by="operator")
+        promoter.promote(_description(), _experiment(), approved_by="operator", verdict=ExperimentVerdict.PASS)
         reloaded = PromotedStore(path=store.path).load()
         assert len(reloaded) == 1
         assert reloaded[0].name == "Payment API latency cascade"
         assert reloaded[0].approved_by == "operator"
 
     def test_envelope_is_versioned(self, store, promoter):
-        promoter.promote(_description(), _experiment(), approved_by="operator")
+        promoter.promote(_description(), _experiment(), approved_by="operator", verdict=ExperimentVerdict.PASS)
         raw = json.loads(store.path.read_text(encoding="utf-8"))
         assert raw["schema_version"] == SCHEMA_VERSION
         assert isinstance(raw["scenarios"], list)
 
     def test_atomic_write_leaves_no_tmp_orphan(self, store, promoter):
-        promoter.promote(_description(), _experiment(), approved_by="operator")
+        promoter.promote(_description(), _experiment(), approved_by="operator", verdict=ExperimentVerdict.PASS)
         orphans = list(store.path.parent.glob("*.tmp"))
         assert orphans == []
 
     def test_successful_write_rotates_backup(self, store, promoter):
-        promoter.promote(_description(incident_id=1, title="First scenario one"), _experiment(), approved_by="op")
-        promoter.promote(_description(incident_id=2, title="Second scenario two"), _experiment(), approved_by="op")
+        promoter.promote(_description(incident_id=1, title="First scenario one"), _experiment(), approved_by="op", verdict=ExperimentVerdict.PASS)
+        promoter.promote(_description(incident_id=2, title="Second scenario two"), _experiment(), approved_by="op", verdict=ExperimentVerdict.PASS)
         # .bak holds the pre-second-write state (one record).
         bak = json.loads(store.bak_path.read_text(encoding="utf-8"))
         assert len(bak["scenarios"]) == 1
@@ -153,8 +153,8 @@ class TestStoreIO:
 
 class TestRecovery:
     def test_corrupt_main_recovers_from_backup(self, store, promoter):
-        promoter.promote(_description(incident_id=1, title="Good scenario one"), _experiment(), approved_by="op")
-        promoter.promote(_description(incident_id=2, title="Good scenario two"), _experiment(), approved_by="op")
+        promoter.promote(_description(incident_id=1, title="Good scenario one"), _experiment(), approved_by="op", verdict=ExperimentVerdict.PASS)
+        promoter.promote(_description(incident_id=2, title="Good scenario two"), _experiment(), approved_by="op", verdict=ExperimentVerdict.PASS)
         # Corrupt the live file; .bak still holds the one-record snapshot.
         store.path.write_text("{ this is not json", encoding="utf-8")
 
@@ -165,7 +165,7 @@ class TestRecovery:
         assert list(store.path.parent.glob("*.corrupt.*"))
 
     def test_corrupt_main_and_backup_returns_empty(self, store, promoter):
-        promoter.promote(_description(), _experiment(), approved_by="op")
+        promoter.promote(_description(), _experiment(), approved_by="op", verdict=ExperimentVerdict.PASS)
         store.path.write_text("garbage", encoding="utf-8")
         store.bak_path.write_text("also garbage", encoding="utf-8")
 
@@ -195,6 +195,7 @@ class TestConcurrency:
                 _description(incident_id=i, title=f"Concurrent scenario number {i}"),
                 _experiment(name=f"exp-{i}"),
                 approved_by="op",
+                verdict=ExperimentVerdict.PASS,
             )
 
         threads = [threading.Thread(target=worker, args=(i,)) for i in range(total)]
@@ -257,8 +258,33 @@ class TestPromoterGuards:
     def test_reject_fallback_description(self, promoter):
         with pytest.raises(PromoteError, match="fallback"):
             promoter.promote(
-                _description(fallback=True), _experiment(), approved_by="op"
+                _description(fallback=True),
+                _experiment(),
+                approved_by="op",
+                verdict=ExperimentVerdict.PASS,
             )
+
+    def test_reject_non_pass_verdict_fail(self, promoter):
+        desc = _description()
+        with pytest.raises(PromoteError, match="PASS"):
+            promoter.promote(
+                desc,
+                _experiment(),
+                approved_by="op",
+                verdict=ExperimentVerdict.FAIL,
+            )
+        assert desc.knowledge_state == ScenarioKnowledgeState.DESCRIBED
+
+    def test_reject_non_pass_verdict_partial(self, promoter):
+        desc = _description()
+        with pytest.raises(PromoteError, match="PASS"):
+            promoter.promote(
+                desc,
+                _experiment(),
+                approved_by="op",
+                verdict=ExperimentVerdict.PARTIAL,
+            )
+        assert desc.knowledge_state == ScenarioKnowledgeState.DESCRIBED
 
     def test_reject_non_described_state(self, promoter):
         with pytest.raises(PromoteError, match="DESCRIBED"):
@@ -266,32 +292,34 @@ class TestPromoterGuards:
                 _description(knowledge_state=ScenarioKnowledgeState.UNKNOWN),
                 _experiment(),
                 approved_by="op",
+                verdict=ExperimentVerdict.PASS,
             )
 
     def test_reject_empty_approved_by(self, promoter):
         with pytest.raises(PromoteError, match="HITL"):
-            promoter.promote(_description(), _experiment(), approved_by="  ")
+            promoter.promote(_description(), _experiment(), approved_by="  ", verdict=ExperimentVerdict.PASS)
 
     def test_reject_duplicate_name(self, promoter):
-        promoter.promote(_description(incident_id=1), _experiment(), approved_by="op")
+        promoter.promote(_description(incident_id=1), _experiment(), approved_by="op", verdict=ExperimentVerdict.PASS)
         with pytest.raises(PromoteError, match="duplicate"):
-            promoter.promote(_description(incident_id=2), _experiment(), approved_by="op")
+            promoter.promote(_description(incident_id=2), _experiment(), approved_by="op", verdict=ExperimentVerdict.PASS)
 
     def test_reject_duplicate_incident(self, promoter):
-        promoter.promote(_description(incident_id=7, title="Scenario alpha one"), _experiment(), approved_by="op")
+        promoter.promote(_description(incident_id=7, title="Scenario alpha one"), _experiment(), approved_by="op", verdict=ExperimentVerdict.PASS)
         with pytest.raises(PromoteError, match="already promoted"):
-            promoter.promote(_description(incident_id=7, title="Scenario beta two"), _experiment(), approved_by="op")
+            promoter.promote(_description(incident_id=7, title="Scenario beta two"), _experiment(), approved_by="op", verdict=ExperimentVerdict.PASS)
 
     def test_reject_invalid_acceptance_criteria(self, promoter):
         with pytest.raises(PromoteError, match="acceptance_criteria"):
             promoter.promote(
                 _description(), _experiment(), approved_by="op",
                 acceptance_criteria={"http_health": "not-a-url"},
+                verdict=ExperimentVerdict.PASS,
             )
 
     def test_promote_sets_known_state(self, promoter):
         desc = _description()
-        promoter.promote(desc, _experiment(), approved_by="op")
+        promoter.promote(desc, _experiment(), approved_by="op", verdict=ExperimentVerdict.PASS)
         assert desc.knowledge_state == ScenarioKnowledgeState.KNOWN
 
 
@@ -346,7 +374,7 @@ class TestAcceptanceCriteria:
 class TestCatalogMerge:
     def test_promoted_appears_in_get_all(self, store, promoter):
         before = len(ScenarioCatalog(promoted_store=store).get_all(MS))
-        promoter.promote(_description(), _experiment(), approved_by="op")
+        promoter.promote(_description(), _experiment(), approved_by="op", verdict=ExperimentVerdict.PASS)
         entries = ScenarioCatalog(promoted_store=store).get_all(MS)
         assert len(entries) == before + 1
 
@@ -357,13 +385,13 @@ class TestCatalogMerge:
         assert built.faults[0].latency == "2000ms"
 
     def test_source_tags_are_correct(self, store, promoter):
-        promoter.promote(_description(), _experiment(), approved_by="op")
+        promoter.promote(_description(), _experiment(), approved_by="op", verdict=ExperimentVerdict.PASS)
         entries = ScenarioCatalog(promoted_store=store).get_all(MS)
         sources = {e.source for e in entries}
         assert sources == {"builtin", "promoted"}
 
     def test_fault_type_filter_includes_promoted(self, store, promoter):
-        promoter.promote(_description(), _experiment(), approved_by="op")
+        promoter.promote(_description(), _experiment(), approved_by="op", verdict=ExperimentVerdict.PASS)
         catalog = ScenarioCatalog(promoted_store=store)
         latency = catalog.get(MS, FaultType.NETWORK_LATENCY)
         assert any(e.source == "promoted" for e in latency)

@@ -10,7 +10,7 @@ from sklearn.cluster import KMeans
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
-from chaosgen.ml.canonical_features import align_features_to_model
+from chaosgen.ml.canonical_features import align_features_to_model, extract_service_from_column
 from chaosgen.schemas.scenarios import AnomalyCluster, AnomalySeverity, AnomalySummary
 
 logger = logging.getLogger(__name__)
@@ -466,13 +466,12 @@ class AnomalyDetector:
     def _extract_service_names(
         dominant_features: List[Tuple[str, float]],
     ) -> List[str]:
-        """Heuristic: extract service names from feature column names.
-        Convention: metric_name__service_name__stat"""
-        services = set()
+        """Extract microservice identities from dominant feature column names."""
+        services: set[str] = set()
         for feat_name, _ in dominant_features:
-            parts = feat_name.split("__")
-            if len(parts) >= 2:
-                services.add(parts[1])
+            service = extract_service_from_column(feat_name)
+            if service:
+                services.add(service)
         return sorted(services) if services else ["unknown"]
 
     @staticmethod

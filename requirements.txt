@@ -22,3 +22,7 @@ Jinja2>=3.1.0
 
 # Kubernetes inject (official client; kubectl remains fallback)
 kubernetes>=28.1.0
+
+# Chaos Toolkit — canonical experiment runner (UCAL executor)
+chaostoolkit>=1.19.0
+chaostoolkit-kubernetes>=0.39.0

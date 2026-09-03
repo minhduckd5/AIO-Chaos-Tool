@@ -1,0 +1,21 @@
+{
+  "status": "completed",
+  "deviated": false,
+  "start": "2026-08-28T10:00:00Z",
+  "end": "2026-08-28T10:00:30Z",
+  "experiment": {
+    "title": "multi-kill",
+    "description": "terminate pods"
+  },
+  "run": [
+    {
+      "activity": {"type": "action", "name": "terminate-frontend"},
+      "status": "succeeded"
+    },
+    {
+      "activity": {"type": "action", "name": "terminate-checkout"},
+      "status": "succeeded"
+    }
+  ],
+  "rollbacks": []
+}

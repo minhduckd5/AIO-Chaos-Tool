@@ -313,6 +313,7 @@ class TestCliIncidentsPromote:
                 "--approved-by", "operator",
                 "--experiment", "0",
                 "--criteria-file", str(criteria_path),
+                "--verdict", "pass",
             ],
         )
         assert result.exit_code != 0

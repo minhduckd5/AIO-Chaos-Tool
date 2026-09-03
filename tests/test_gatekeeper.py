@@ -89,14 +89,14 @@ class TestStrictLogBoost:
         assert candidates[0].log_correlated is True
 
     def test_no_boost_for_warning_only_logs(self):
-        gk = IncidentGatekeeper()
+        gk = IncidentGatekeeper(GatekeeperSettings(service_error_boost=False))
         summaries = [_summary(error_pattern="warning: deprecation notice")]
         candidates, _ = gk.filter([self._high_freq_low_sev_cluster()], 10.0, summaries=summaries)
         assert candidates[0].verdict == IncidentVerdict.TRANSIENT
         assert candidates[0].log_correlated is False
 
     def test_no_boost_when_metric_signal_missing(self):
-        gk = IncidentGatekeeper()
+        gk = IncidentGatekeeper(GatekeeperSettings(service_error_boost=False))
         # severe log present, but no error_rate/error_count in dominant features
         cluster = _cluster(
             sample_count=30,
@@ -109,7 +109,9 @@ class TestStrictLogBoost:
         assert candidates[0].log_correlated is False
 
     def test_boost_disabled_via_settings(self):
-        gk = IncidentGatekeeper(GatekeeperSettings(strict_log_boost=False))
+        gk = IncidentGatekeeper(
+            GatekeeperSettings(strict_log_boost=False, service_error_boost=False)
+        )
         summaries = [_summary(error_pattern="error: elevated http_error_rate")]
         candidates, _ = gk.filter([self._high_freq_low_sev_cluster()], 10.0, summaries=summaries)
         assert candidates[0].verdict == IncidentVerdict.TRANSIENT

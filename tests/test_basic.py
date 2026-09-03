@@ -18,12 +18,13 @@ def test_list_modules():
     modules = orchestrator.list_modules()
     
     expected_modules = [
-        'chaos-toolkit',
-        'kube-monkey',
-        'pumba',
-        'chaos-monkey',
-        'toxiproxy',
-        'muxy'
+        "chaos-toolkit",
+        "kube-monkey",
+        "pumba",
+        "chaos-monkey",
+        "toxiproxy",
+        "muxy",
+        "kubectl-chaos",
     ]
     
     assert set(modules) == set(expected_modules)
@@ -45,18 +46,21 @@ def test_get_module_actions():
 
 
 def test_execute_action():
-    """Test executing an action."""
+    """Test executing an action (dry-run path — no Docker required in CI)."""
     orchestrator = ChaosOrchestrator()
-    
+    pumba = orchestrator.get_module("pumba")
+    assert pumba is not None
+    pumba.dry_run = True
+
     result = orchestrator.execute_action(
-        'pumba',
-        'kill_container',
-        {'container': 'test-container'}
+        "pumba",
+        "kill_container",
+        {"container": "test-container"},
     )
-    
-    assert result['success'] is True
-    assert result['module'] == 'pumba'
-    assert result['action'] == 'kill_container'
+
+    assert result["success"] is True
+    assert result["module"] == "pumba"
+    assert result["action"] == "kill_container"
 
 
 def test_module_status():

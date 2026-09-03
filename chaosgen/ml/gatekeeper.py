@@ -21,6 +21,7 @@ import logging
 from typing import Dict, List, Optional, Protocol, Tuple
 
 from chaosgen.config.settings import GatekeeperSettings
+from chaosgen.ml.canonical_features import extract_service_from_column, is_concrete_service
 from chaosgen.schemas.incidents import IncidentCandidate, IncidentVerdict
 from chaosgen.schemas.scenarios import AnomalyCluster, AnomalySeverity, AnomalySummary
 
@@ -33,7 +34,16 @@ _SEVERITY_NUMERIC: Dict[AnomalySeverity, float] = {
     AnomalySeverity.CRITICAL: 1.0,
 }
 
-_METRIC_ERROR_TOKENS = ("error_rate", "error_count")
+_METRIC_ERROR_TOKENS = (
+    "error_rate",
+    "error_count",
+    "error_ratio",
+    "http_error",
+    "http_errors",
+    "5xx",
+    "custom__error",
+    "canonical__errors",
+)
 
 
 class LookbackState(Dict):
@@ -106,7 +116,11 @@ class IncidentGatekeeper:
             log_correlated = metric_error and severe_log
 
             verdict, rationale = self._evaluate_verdict(
-                frequency, severity, log_correlated
+                frequency,
+                severity,
+                log_correlated,
+                cluster=cluster,
+                summary=summary,
             )
 
             if verdict == IncidentVerdict.NOISE:
@@ -139,13 +153,30 @@ class IncidentGatekeeper:
     # -- decision matrix ----------------------------------------------------
 
     def _evaluate_verdict(
-        self, freq: float, sev: float, log_correlated: bool
+        self,
+        freq: float,
+        sev: float,
+        log_correlated: bool,
+        cluster: Optional[AnomalyCluster] = None,
+        summary: Optional[AnomalySummary] = None,
     ) -> Tuple[IncidentVerdict, str]:
         s = self.settings
         freq_low = freq <= s.frequency_low_threshold
         freq_high = freq >= s.frequency_high_threshold
         sev_low = sev <= s.severity_low_threshold
         sev_high = sev >= s.severity_high_threshold
+
+        if (
+            s.service_error_boost
+            and cluster is not None
+            and self._has_metric_error_signal(cluster)
+            and self._has_service_attribution(cluster, summary)
+        ):
+            service = self._resolve_service_target(cluster, summary) or "unknown"
+            return IncidentVerdict.REAL, (
+                f"Service-specific error signal on {service} "
+                f"(freq={freq:.2f}/h, sev={sev:.2f}) -> real."
+            )
 
         if freq_low and sev_low:
             return IncidentVerdict.NOISE, (
@@ -200,6 +231,22 @@ class IncidentGatekeeper:
         for feat_name, _ in cluster.dominant_features:
             lowered = feat_name.lower()
             if any(token in lowered for token in _METRIC_ERROR_TOKENS):
+                return True
+        return False
+
+    @staticmethod
+    def _has_service_attribution(
+        cluster: AnomalyCluster,
+        summary: Optional[AnomalySummary],
+    ) -> bool:
+        """True when attribution resolves to a concrete microservice (not a signal bucket)."""
+        if summary and is_concrete_service(summary.service_name):
+            return True
+        for name in cluster.affected_services or []:
+            if is_concrete_service(name):
+                return True
+        for feat_name, _ in cluster.dominant_features:
+            if extract_service_from_column(feat_name):
                 return True
         return False
 

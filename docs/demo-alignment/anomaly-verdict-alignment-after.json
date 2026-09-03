@@ -1,0 +1,112 @@
+{
+  "generated_at": "2026-08-29T03:57:47.387979+00:00",
+  "model_path": "H:\\Project\\AIO-Chaos-Tool\\models\\demo_retrained.joblib",
+  "runs_dir": "H:\\Project\\AIO-Chaos-Tool\\scratch\\telemetry\\runs",
+  "summary": {
+    "evaluable_runs": 3,
+    "excluded_runs": 0,
+    "aligned_runs": 2,
+    "alignment_rate": 0.6667,
+    "fail_runs": 2,
+    "fail_with_spike": 2,
+    "fail_detection_rate": 1.0,
+    "pass_runs": 1,
+    "pass_without_spike": 0,
+    "pass_specificity": 0.0,
+    "partial_runs": 0,
+    "partial_with_spike": 0
+  },
+  "confusion_matrix": [
+    {
+      "verdict": "fail",
+      "if_spike": true,
+      "count": 2
+    },
+    {
+      "verdict": "pass",
+      "if_spike": true,
+      "count": 1
+    }
+  ],
+  "runs": [
+    {
+      "run_id": "ctk-completed_no_deviation-20260828100000-bc9f0323eb",
+      "experiment_name": "multi-kill",
+      "verdict": "pass",
+      "ctk_status": "completed",
+      "aborted": false,
+      "dry_run": false,
+      "window_start": "2026-08-28T10:00:00+00:00",
+      "window_end": "2026-08-28T10:00:30+00:00",
+      "journal_path": "H:\\Project\\AIO-Chaos-Tool\\tests\\fixtures\\ctk_journal\\completed_no_deviation.json",
+      "telemetry_cache_path": "H:\\Project\\AIO-Chaos-Tool\\scratch\\telemetry\\runs\\ctk-completed_no_deviation-20260828100000-bc9f0323eb.json",
+      "telemetry_series": 2,
+      "telemetry_samples": 24,
+      "window_score": {
+        "feature_rows": 12,
+        "anomaly_count": 12,
+        "anomaly_fraction": 1.0,
+        "max_severity": "high",
+        "max_severity_score": 0.75,
+        "any_spike": true,
+        "mean_outlier_score": 0.2282,
+        "warnings": []
+      },
+      "alignment_outcome": "false_alarm",
+      "alignment_note": "PASS verdict but IF flagged spike"
+    },
+    {
+      "run_id": "ctk-completed_deviated-564de02b9d",
+      "experiment_name": "latency test",
+      "verdict": "fail",
+      "ctk_status": "completed",
+      "aborted": false,
+      "dry_run": false,
+      "window_start": "2026-08-29T02:19:56.325883+00:00",
+      "window_end": "2026-08-29T02:24:56.325883+00:00",
+      "journal_path": "H:\\Project\\AIO-Chaos-Tool\\tests\\fixtures\\ctk_journal\\completed_deviated.json",
+      "telemetry_cache_path": "H:\\Project\\AIO-Chaos-Tool\\scratch\\telemetry\\runs\\ctk-completed_deviated-564de02b9d.json",
+      "telemetry_series": 2,
+      "telemetry_samples": 24,
+      "window_score": {
+        "feature_rows": 11,
+        "anomaly_count": 11,
+        "anomaly_fraction": 1.0,
+        "max_severity": "high",
+        "max_severity_score": 0.75,
+        "any_spike": true,
+        "mean_outlier_score": 0.2282,
+        "warnings": []
+      },
+      "alignment_outcome": "aligned",
+      "alignment_note": "FAIL verdict with IF spike in chaos window"
+    },
+    {
+      "run_id": "ctk-activity_failure-7b25aed643",
+      "experiment_name": "partial failure",
+      "verdict": "fail",
+      "ctk_status": "completed",
+      "aborted": false,
+      "dry_run": false,
+      "window_start": "2026-08-29T02:19:56.504071+00:00",
+      "window_end": "2026-08-29T02:24:56.504071+00:00",
+      "journal_path": "H:\\Project\\AIO-Chaos-Tool\\tests\\fixtures\\ctk_journal\\activity_failure.json",
+      "telemetry_cache_path": "H:\\Project\\AIO-Chaos-Tool\\scratch\\telemetry\\runs\\ctk-activity_failure-7b25aed643.json",
+      "telemetry_series": 2,
+      "telemetry_samples": 24,
+      "window_score": {
+        "feature_rows": 11,
+        "anomaly_count": 11,
+        "anomaly_fraction": 1.0,
+        "max_severity": "high",
+        "max_severity_score": 0.75,
+        "any_spike": true,
+        "mean_outlier_score": 0.2282,
+        "warnings": []
+      },
+      "alignment_outcome": "aligned",
+      "alignment_note": "FAIL verdict with IF spike in chaos window"
+    }
+  ],
+  "narrative": "Isolation Forest was trained on healthy baseline telemetry (unsupervised). Per-run chaos windows were scored without leaking verdict labels into fit(). On 3 evaluable runs, alignment rate was 67% (FAIL detection 100%, PASS specificity 0%)."
+}

@@ -248,3 +248,13 @@ data/public-datasets/
 scratch/
 !scratch/obscura/.gitkeep
 
+# Chaos Toolkit local run artifacts (journals, dry-run manifests, journals)
+# Covered by scratch/; keep explicit so accidental paths outside are obvious
+scratch/ctk/
+scratch/ctk/experiments/
+scratch/ctk/journals/
+
+# Local GUI / operator dumps
+*.ctk.local.json
+serverless-boundary-*.json
+

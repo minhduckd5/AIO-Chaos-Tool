@@ -392,6 +392,132 @@ def train_model(export_paths, output_path, live, hours, config_path):
     click.secho("Model training and serialization completed successfully.", fg="green")
 
 
+# ---------------------------------------------------------------------------
+# retrain-anomaly  (Phase 2 — baseline + capped CTK corpus)
+# ---------------------------------------------------------------------------
+
+
+@main.command("retrain-anomaly")
+@click.option(
+    "--export", "export_paths", required=True, multiple=True, type=click.Path(exists=True),
+    help="Healthy baseline export bundle(s). Repeatable.",
+)
+@click.option(
+    "--include-ctk-runs", "ctk_runs_dir", default=None, type=click.Path(exists=True),
+    help="Optional cached per-run telemetry dir (scratch/telemetry/runs).",
+)
+@click.option(
+    "--output-model", "output_path", default="./default_model.joblib",
+    help="Output path for retrained .joblib.",
+)
+@click.option(
+    "--contamination-mode",
+    type=click.Choice(["baseline_only", "proportional", "fixed"], case_sensitive=False),
+    default="proportional",
+    show_default=True,
+    help="How to set IF contamination when merging CTK windows.",
+)
+@click.option(
+    "--contamination", "fixed_contamination", default=None, type=float,
+    help="Override contamination (fixed mode, or cap for proportional).",
+)
+@click.option(
+    "--max-ctk-fraction", default=0.10, show_default=True,
+    help="Max fraction of baseline rows from CTK caches.",
+)
+@click.option(
+    "--ctk-verdict-filter",
+    type=click.Choice(["pass_only", "all", "none"], case_sensitive=False),
+    default="pass_only",
+    show_default=True,
+    help="Which cached runs may contribute rows (default: PASS only).",
+)
+@click.option("--config", "config_path", default=None, help="Path to settings.yaml.")
+def retrain_anomaly_cmd(
+    export_paths,
+    ctk_runs_dir,
+    output_path,
+    contamination_mode,
+    fixed_contamination,
+    max_ctk_fraction,
+    ctk_verdict_filter,
+    config_path,
+):
+    """Retrain IsolationForest on baseline exports with optional capped CTK windows."""
+    from sklearn.ensemble import IsolationForest
+
+    from chaosgen.config.settings import load_settings
+    from chaosgen.evaluation.anomaly_corpus import (
+        CtkVerdictFilter,
+        ContaminationMode,
+        build_retrain_corpus,
+    )
+    from chaosgen.ml.anomaly_detector import AnomalyDetector
+    from chaosgen.ml.canonical_features import CANONICAL_SCHEMA_VERSION
+    from chaosgen.ml.cluster_labels import ClusterLabelStore
+
+    settings = load_settings(config_path)
+    mode = ContaminationMode(contamination_mode.lower())
+    verdict_filter = CtkVerdictFilter(ctk_verdict_filter.lower())
+
+    corpus = build_retrain_corpus(
+        export_paths,
+        settings,
+        include_ctk_runs_dir=ctk_runs_dir,
+        verdict_filter=verdict_filter,
+        contamination_mode=mode,
+        max_ctk_fraction=max_ctk_fraction,
+        fixed_contamination=fixed_contamination,
+    )
+
+    click.echo(
+        f"[ChaosGen] Corpus: {len(corpus.features)} rows "
+        f"(baseline={corpus.baseline_rows}, ctk={corpus.ctk_rows_used}/{corpus.ctk_rows_requested})"
+    )
+    click.echo(
+        f"[ChaosGen] Contamination: {corpus.contamination:.4f} ({corpus.contamination_mode.value})"
+    )
+    for note in corpus.notes:
+        click.secho(f"  note: {note}", fg="yellow")
+
+    detector = AnomalyDetector(settings=settings.anomaly)
+    detector.contamination = corpus.contamination
+    detector.iso_forest = IsolationForest(
+        contamination=corpus.contamination,
+        random_state=detector.random_state,
+        n_jobs=-1,
+    )
+    if settings.features.canonical_enabled:
+        detector.canonical_schema_version = CANONICAL_SCHEMA_VERSION
+
+    click.echo(
+        f"[ChaosGen] Fitting IsolationForest on {len(corpus.features)} samples, "
+        f"{corpus.features.shape[1]} features..."
+    )
+    detector.fit(corpus.features)
+
+    clusters = []
+    try:
+        detected = detector.detect(corpus.features)
+        if isinstance(detected, list):
+            clusters = detected
+    except Exception as exc:
+        click.secho(f"Warning during KMeans fit: {exc}", fg="yellow")
+
+    detector.save_model(output_path)
+    click.echo(f"[ChaosGen] Model saved: {output_path}")
+
+    cluster_ids = [c.cluster_id for c in clusters]
+    if not cluster_ids and getattr(detector, "last_chosen_k", None):
+        cluster_ids = list(range(int(detector.last_chosen_k)))
+    if cluster_ids:
+        store = ClusterLabelStore.sidecar_for_model(output_path)
+        label_path = store.write_stub(cluster_ids, model_path=output_path)
+        click.echo(f"[ChaosGen] Cluster label stub: {label_path}")
+
+    click.secho("Retrain completed.", fg="green")
+
+
 @main.command("plot-anomalies")
 @click.option(
     "--export", "export_path", required=True, type=click.Path(exists=True),
@@ -995,14 +1121,38 @@ def incidents(report_path, state, run_id, chronic, since, output):
 @click.option("--criteria-file", required=True, type=click.Path(exists=True), help="YAML/JSON acceptance criteria.")
 @click.option("--incident-id", type=int, default=None, help="Match description.source_incident_id in report.")
 @click.option("--experiment", required=True, help="Experiment name or numeric index in report.")
-def promote(report_path, approved_by, criteria_file, incident_id, experiment):
-    """Promote a described incident into the dynamic catalog (HITL-gated)."""
+@click.option(
+    "--verdict",
+    type=click.Choice(["pass", "fail", "partial"], case_sensitive=False),
+    default=None,
+    help="Expectation Verdict for this run (must be pass to promote).",
+)
+@click.option(
+    "--from-verdict",
+    "verdict_path",
+    type=click.Path(exists=True),
+    default=None,
+    help="ExpectationVerdictReport JSON (verdict field used; must be pass).",
+)
+def promote(report_path, approved_by, criteria_file, incident_id, experiment, verdict, verdict_path):
+    """Promote a described incident into the dynamic catalog (HITL + PASS-gated)."""
     import yaml
 
     from chaosgen.advisor.catalog_promoter import CatalogPromoter, PromoteError
-    from chaosgen.advisor.report_store import load_report
-    from chaosgen.schemas.scenarios import ScenarioKnowledgeState
+    from chaosgen.advisor.report_store import load_report, load_verdict_report
+    from chaosgen.schemas.scenarios import ExperimentVerdict, ScenarioKnowledgeState
     from chaosgen.storage.history import get_default_history_store
+
+    if verdict is None and verdict_path is None:
+        raise click.ClickException(
+            "Provide --verdict pass|fail|partial or --from-verdict <ExpectationVerdictReport JSON>."
+        )
+
+    if verdict_path is not None:
+        report_v = load_verdict_report(verdict_path)
+        exp_verdict = report_v.verdict
+    else:
+        exp_verdict = ExperimentVerdict(verdict.lower())
 
     try:
         report = load_report(report_path)
@@ -1033,15 +1183,21 @@ def promote(report_path, approved_by, criteria_file, incident_id, experiment):
 
     description_row_id = report.description_db_ids.get(description.source_incident_id)
 
+    from chaosgen.config.connect_routing import architecture_from_settings
+    from chaosgen.config.settings import load_settings
+
     promoter = CatalogPromoter(history_store=get_default_history_store())
+    promote_arch = architecture_from_settings(load_settings())
     try:
         entry = promoter.promote(
             description,
             experiment_obj,
             approved_by=approved_by,
+            verdict=exp_verdict,
             acceptance_criteria=criteria,
             name=experiment_obj.name,
             description_row_id=description_row_id,
+            architecture=promote_arch,
         )
     except PromoteError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -1103,8 +1259,12 @@ def run(dry_run, approve_all, force, config):
 
 @main.command("verdict")
 @click.option(
-    "--criteria", "criteria_file", required=True, type=click.Path(exists=True),
+    "--criteria", "criteria_file", default=None, type=click.Path(exists=True),
     help="YAML/JSON with claim + expectations (see examples/demo-expectation-criteria.yaml).",
+)
+@click.option(
+    "--journal", "journal_path", default=None, type=click.Path(exists=True),
+    help="Evaluate from a CTK journal JSON (post chaos run).",
 )
 @click.option(
     "--prometheus-url", default=None,
@@ -1122,8 +1282,8 @@ def run(dry_run, approve_all, force, config):
     "--save", "save_path", default=None,
     help="Write ExpectationVerdictReport JSON (default: config last_verdict.json).",
 )
-def verdict_cmd(criteria_file, prometheus_url, no_poll, experiment_name, save_path):
-    """Evaluate operational expectations and print PASS/FAIL/PARTIAL + rationale."""
+def verdict_cmd(criteria_file, journal_path, prometheus_url, no_poll, experiment_name, save_path):
+    """Evaluate operational expectations or a CTK journal; print PASS/FAIL/PARTIAL."""
     import yaml
     from chaosgen.advisor.catalog_promoter import (
         evaluate_acceptance_detailed,
@@ -1132,16 +1292,7 @@ def verdict_cmd(criteria_file, prometheus_url, no_poll, experiment_name, save_pa
     from chaosgen.advisor.report_store import save_verdict_report
     from chaosgen.config.telemetry_endpoints import resolve_prometheus_url
     from chaosgen.config.settings import load_settings
-
-    raw = Path(criteria_file).read_text(encoding="utf-8")
-    if criteria_file.endswith((".yaml", ".yml")):
-        criteria = yaml.safe_load(raw) or {}
-    else:
-        criteria = json.loads(raw)
-
-    errors = validate_acceptance_criteria(criteria)
-    if errors:
-        raise click.ClickException("Invalid criteria:\n  - " + "\n  - ".join(errors))
+    from chaosgen.evaluation.ctk_verdict import build_verdict_from_ctk_run
 
     settings = load_settings()
     prom = prometheus_url
@@ -1151,12 +1302,44 @@ def verdict_cmd(criteria_file, prometheus_url, no_poll, experiment_name, save_pa
         except Exception:
             prom = None
 
-    report = evaluate_acceptance_detailed(
-        criteria,
-        experiment_name=experiment_name,
-        poll=not no_poll,
-        prometheus_url=prom,
-    )
+    if journal_path:
+        criteria = None
+        if criteria_file:
+            raw = Path(criteria_file).read_text(encoding="utf-8")
+            if str(criteria_file).endswith((".yaml", ".yml")):
+                criteria = yaml.safe_load(raw) or {}
+            else:
+                criteria = json.loads(raw)
+            errors = validate_acceptance_criteria(criteria)
+            if errors:
+                raise click.ClickException("Invalid criteria:\n  - " + "\n  - ".join(errors))
+        report = build_verdict_from_ctk_run(
+            {"success": True, "journal_path": str(journal_path)},
+            experiment_name=experiment_name,
+            acceptance_criteria=criteria,
+            prometheus_url=prom,
+            poll_telemetry=not no_poll,
+        )
+    elif criteria_file:
+        raw = Path(criteria_file).read_text(encoding="utf-8")
+        if str(criteria_file).endswith((".yaml", ".yml")):
+            criteria = yaml.safe_load(raw) or {}
+        else:
+            criteria = json.loads(raw)
+
+        errors = validate_acceptance_criteria(criteria)
+        if errors:
+            raise click.ClickException("Invalid criteria:\n  - " + "\n  - ".join(errors))
+
+        report = evaluate_acceptance_detailed(
+            criteria,
+            experiment_name=experiment_name,
+            poll=not no_poll,
+            prometheus_url=prom,
+        )
+    else:
+        raise click.ClickException("Provide --journal PATH or --criteria FILE.")
+
     written = save_verdict_report(report, save_path)
 
     color = {
@@ -1174,6 +1357,180 @@ def verdict_cmd(criteria_file, prometheus_url, no_poll, experiment_name, save_pa
         click.echo(f"  [{mark}] {c.id}: {c.message}")
     click.echo(f"\nSaved: {written}")
     click.echo("See docs/advisor-demo-verdict-beat.md for advisor demo narration.")
+
+
+# ---------------------------------------------------------------------------
+# fetch-run-telemetry  (Phase 1 — anomaly retrain window cache)
+# ---------------------------------------------------------------------------
+
+
+@main.command("fetch-run-telemetry")
+@click.option(
+    "--journal", "journal_path", default=None, type=click.Path(exists=True),
+    help="CTK journal JSON (chaos run --journal-path output).",
+)
+@click.option(
+    "--verdict", "verdict_path", default=None, type=click.Path(exists=True),
+    help="ExpectationVerdictReport JSON (joins journal_path from metadata).",
+)
+@click.option(
+    "--journal-dir", default=None, type=click.Path(exists=True),
+    help="Scan directory of journal *.json files (batch cache).",
+)
+@click.option(
+    "--padding", default=60, show_default=True,
+    help="Seconds to expand window before start and after end.",
+)
+@click.option(
+    "--output-dir", default="scratch/telemetry/runs", show_default=True,
+    help="Directory for cached telemetry JSON bundles.",
+)
+@click.option("--config", "config_path", default=None, help="Path to settings.yaml.")
+@click.option("--prometheus-url", default=None, help="Override Prometheus base URL.")
+@click.option("--loki-url", default=None, help="Override Loki base URL.")
+@click.option(
+    "--dry-run", is_flag=True, default=False,
+    help="Print resolved windows only; do not query Prometheus/Loki.",
+)
+def fetch_run_telemetry_cmd(
+    journal_path,
+    verdict_path,
+    journal_dir,
+    padding,
+    output_dir,
+    config_path,
+    prometheus_url,
+    loki_url,
+    dry_run,
+):
+    """Fetch Prometheus/Loki telemetry for CTK journal time windows and cache locally."""
+    from chaosgen.evaluation.run_catalog import build_run_records, RunCatalogError
+    from chaosgen.evaluation.run_telemetry import fetch_and_cache_run
+
+    if not journal_path and not verdict_path and not journal_dir:
+        raise click.ClickException(
+            "Provide --journal, --verdict, and/or --journal-dir."
+        )
+
+    try:
+        records = build_run_records(
+            journal_paths=[journal_path] if journal_path else None,
+            journal_dir=journal_dir,
+            verdict_path=verdict_path,
+            padding_seconds=padding,
+        )
+    except RunCatalogError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if not records:
+        raise click.ClickException("No run records resolved from inputs.")
+
+    for record in records:
+        click.echo(
+            f"\nRun: {record.run_id} | {record.experiment_name} | "
+            f"window {record.window_start.isoformat()} -> {record.window_end.isoformat()} "
+            f"({record.window_source.value}, pad={record.window_padding_seconds}s)"
+        )
+        if record.verdict:
+            click.echo(f"  verdict: {record.verdict.value}")
+        for w in record.warnings:
+            click.secho(f"  warning: {w}", fg="yellow")
+        if record.dry_run:
+            click.secho("  skipped: dry_run flag on record", fg="yellow")
+            continue
+        if dry_run:
+            continue
+        updated = fetch_and_cache_run(
+            record,
+            output_dir=output_dir,
+            config_path=config_path,
+            prom_url=prometheus_url,
+            loki_url=loki_url,
+        )
+        click.echo(f"  cached: {updated.telemetry_cache_path}")
+
+
+# ---------------------------------------------------------------------------
+# eval-anomaly-alignment  (Phase 3 — IF vs verdict validation)
+# ---------------------------------------------------------------------------
+
+
+@main.command("eval-anomaly-alignment")
+@click.option(
+    "--runs-dir", default="scratch/telemetry/runs", show_default=True,
+    help="Directory of cached per-run telemetry JSON bundles.",
+)
+@click.option(
+    "--model-path", default=None, type=click.Path(exists=True),
+    help="Pre-trained IsolationForest .joblib (default: settings anomaly.default_model_path).",
+)
+@click.option(
+    "--verdict", "verdict_path", default=None, type=click.Path(exists=True),
+    help="Optional verdict JSON to enrich cached runs missing labels.",
+)
+@click.option(
+    "--journal-dir", default=None, type=click.Path(exists=True),
+    help="Optional journal directory to enrich verdict labels on cached runs.",
+)
+@click.option(
+    "--output-md", default="docs/anomaly-verdict-alignment.md", show_default=True,
+    help="Markdown report for thesis slides.",
+)
+@click.option(
+    "--output-json", default="docs/anomaly-verdict-alignment.json", show_default=True,
+    help="Structured JSON report.",
+)
+@click.option("--config", "config_path", default=None, help="Path to settings.yaml.")
+def eval_anomaly_alignment_cmd(
+    runs_dir,
+    model_path,
+    verdict_path,
+    journal_dir,
+    output_md,
+    output_json,
+    config_path,
+):
+    """Score IF spikes vs chaos verdict labels; write Markdown + JSON alignment report."""
+    from chaosgen.evaluation.verdict_alignment import (
+        build_alignment_report,
+        enrich_records_from_catalog,
+        load_cached_runs_from_dir,
+        write_alignment_artifacts,
+    )
+
+    cached = load_cached_runs_from_dir(runs_dir)
+    if not cached:
+        raise click.ClickException(f"No cached runs in {runs_dir}")
+
+    if verdict_path or journal_dir:
+        records = enrich_records_from_catalog(
+            [r for r, _ in cached],
+            verdict_path=verdict_path,
+            journal_dir=journal_dir,
+        )
+        cached = [(records[i], cached[i][1]) for i in range(len(cached))]
+
+    report = build_alignment_report(
+        runs_dir=runs_dir,
+        model_path=model_path,
+        config_path=config_path,
+        cached_runs=cached,
+    )
+
+    md_path, json_path = write_alignment_artifacts(
+        report,
+        markdown_path=output_md,
+        json_path=output_json,
+    )
+
+    click.echo("\n=== Anomaly vs Verdict Alignment ===")
+    click.echo(f"Evaluable runs: {report.summary.evaluable_runs}")
+    click.echo(f"Alignment rate: {report.summary.alignment_rate:.2%}")
+    click.echo(f"FAIL detection: {report.summary.fail_detection_rate:.2%}")
+    click.echo(f"PASS specificity: {report.summary.pass_specificity:.2%}")
+    click.echo(f"\nMarkdown: {md_path}")
+    click.echo(f"JSON: {json_path}")
+    click.echo(f"\n{report.narrative}")
 
 
 # ---------------------------------------------------------------------------
@@ -1327,6 +1684,7 @@ def config_init():
         save_settings,
     )
     from chaosgen.schemas.discovery import ArchitectureType, EnvironmentType, ObservabilityTool
+    from chaosgen.config.profile_presets import profile_priority_tier
 
     click.secho("\n[ChaosGen Config Wizard]\n", bold=True)
 
@@ -1354,23 +1712,76 @@ def config_init():
         click.echo("Run: chaosgen analyze --check")
         return
 
-    # Architecture
+    # Architecture (form-first — no auto-detect)
     arch_choices = [t.value for t in ArchitectureType if t != ArchitectureType.UNKNOWN]
     arch_val = click.prompt(
         "Architecture type",
-        type=click.Choice(["auto"] + arch_choices),
-        default="auto",
+        type=click.Choice(arch_choices),
+        default=ArchitectureType.MICROSERVICES.value,
     )
-    arch = ArchitectureType(arch_val) if arch_val != "auto" else None
+    arch = ArchitectureType(arch_val)
 
-    # Environment
+    # Environment (optional override)
     env_choices = [t.value for t in EnvironmentType if t != EnvironmentType.UNKNOWN]
     env_val = click.prompt(
-        "Environment type",
-        type=click.Choice(["auto"] + env_choices),
-        default="auto",
+        "Environment type (Enter = preset default for architecture)",
+        type=click.Choice(["(default)"] + env_choices),
+        default="(default)",
+        show_default=True,
     )
-    env = EnvironmentType(env_val) if env_val != "auto" else None
+    env = EnvironmentType(env_val) if env_val != "(default)" else None
+
+    settings = ChaosGenSettings(
+        hints=UserHints(
+            architecture=arch,
+            environment=env,
+            skip_auto_detect=True,
+        ),
+    )
+
+    click.echo(f"\nConnect profile ({arch_val}, tier {profile_priority_tier(arch)}):")
+
+    if arch in (ArchitectureType.MICROSERVICES,) and (env is None or env == EnvironmentType.KUBERNETES):
+        kc = click.prompt("  connect.kubernetes.kubeconfig", default="", show_default=False)
+        if kc.strip():
+            settings.connect.kubernetes.kubeconfig = kc.strip()
+            settings.inject.kubeconfig = kc.strip()
+
+    if arch == ArchitectureType.MODULAR_MONOLITH:
+        docker_host = click.prompt(
+            "  connect.docker.host",
+            default="unix:///var/run/docker.sock",
+        )
+        settings.connect.docker.host = docker_host.strip() or None
+        compose = click.prompt("  connect.docker.compose_file (optional)", default="", show_default=False)
+        if compose.strip():
+            settings.connect.docker.compose_file = compose.strip()
+
+    if arch == ArchitectureType.EVENT_DRIVEN:
+        broker_type = click.prompt(
+            "  connect.broker.type",
+            type=click.Choice(["kafka", "redpanda", "rabbitmq", "nats"]),
+            default="redpanda",
+        )
+        settings.connect.broker.type = broker_type
+        settings.connect.broker.bootstrap = click.prompt(
+            "  connect.broker.bootstrap",
+            default="localhost:9092",
+        ).strip()
+
+    if arch == ArchitectureType.CLIENT_SERVER:
+        settings.connect.toxiproxy.api_url = click.prompt(
+            "  connect.toxiproxy.api_url",
+            default="http://127.0.0.1:8474",
+        ).strip()
+
+    from chaosgen.config.profile_validation import require_valid_profile_connect
+
+    try:
+        require_valid_profile_connect(settings)
+    except Exception as exc:
+        click.secho(f"\nProfile validation failed: {exc}", fg="red")
+        raise SystemExit(1) from exc
 
     # Observability tools
     obs_hints: list[ObservabilityHint] = []
@@ -1419,8 +1830,10 @@ def config_init():
             architecture=arch,
             environment=env,
             observability=obs_hints,
+            skip_auto_detect=True,
         ),
         llm_provider=llm,
+        connect=settings.connect,
     )
 
     save_settings(settings)

@@ -1,0 +1,55 @@
+{
+  "generated_at": "2026-08-29T04:39:21.702819+00:00",
+  "model_path": "models\\merged_canonical_before_live.joblib",
+  "runs_dir": "H:\\Project\\AIO-Chaos-Tool\\scratch\\telemetry\\runs",
+  "summary": {
+    "evaluable_runs": 1,
+    "excluded_runs": 0,
+    "aligned_runs": 0,
+    "alignment_rate": 0.0,
+    "fail_runs": 0,
+    "fail_with_spike": 0,
+    "fail_detection_rate": 0.0,
+    "pass_runs": 1,
+    "pass_without_spike": 0,
+    "pass_specificity": 0.0,
+    "partial_runs": 0,
+    "partial_with_spike": 0
+  },
+  "confusion_matrix": [
+    {
+      "verdict": "pass",
+      "if_spike": true,
+      "count": 1
+    }
+  ],
+  "runs": [
+    {
+      "run_id": "ctk-journal-experiment-20260829T0429-20260829042926-3e5b3423fb",
+      "experiment_name": "flagship-multi-kill",
+      "verdict": "pass",
+      "ctk_status": "completed",
+      "aborted": false,
+      "dry_run": false,
+      "window_start": "2026-08-29T04:28:26.418924+00:00",
+      "window_end": "2026-08-29T04:30:27.100931+00:00",
+      "journal_path": "H:\\Project\\AIO-Chaos-Tool\\scratch\\ctk\\journals\\journal-experiment-20260829T042924Z.json",
+      "telemetry_cache_path": "H:\\Project\\AIO-Chaos-Tool\\scratch\\telemetry\\runs\\ctk-journal-experiment-20260829T0429-20260829042926-3e5b3423fb.json",
+      "telemetry_series": 118,
+      "telemetry_samples": 1062,
+      "window_score": {
+        "feature_rows": 3,
+        "anomaly_count": 3,
+        "anomaly_fraction": 1.0,
+        "max_severity": "high",
+        "max_severity_score": 0.75,
+        "any_spike": true,
+        "mean_outlier_score": 0.1811,
+        "warnings": []
+      },
+      "alignment_outcome": "false_alarm",
+      "alignment_note": "PASS verdict but IF flagged spike"
+    }
+  ],
+  "narrative": "Isolation Forest was trained on healthy baseline telemetry (unsupervised). Per-run chaos windows were scored without leaking verdict labels into fit(). On 1 evaluable runs, alignment rate was 0% (FAIL detection 0%, PASS specificity 0%)."
+}

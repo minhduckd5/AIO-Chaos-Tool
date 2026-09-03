@@ -1,0 +1,11 @@
+{
+  "status": "aborted",
+  "deviated": false,
+  "experiment": {"title": "halted run"},
+  "run": [
+    {
+      "activity": {"type": "action", "name": "terminate-frontend"},
+      "status": "succeeded"
+    }
+  ]
+}

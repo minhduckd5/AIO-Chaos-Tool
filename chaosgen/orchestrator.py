@@ -1,5 +1,6 @@
 from typing import Dict, Any, List, Optional
 import json
+import os
 import time
 import logging
 import uuid
@@ -59,6 +60,9 @@ class ChaosOrchestrator:
         self._suite_mode: bool = False
         self._suite_abort: bool = False
         self.suite_results: List[Dict[str, Any]] = []
+        # --- START MODIFICATION ---
+        self._ctk_run_active: bool = False
+        # --- END MODIFICATION ---
 
         from chaosgen.config.settings import load_settings
         from chaosgen.safety.governance import SafetyPolicy
@@ -84,6 +88,9 @@ class ChaosOrchestrator:
         self.blast_radius_controller = BlastRadiusController(safety_policy)
         self.dead_mans_switch: Optional[DeadMansSwitch] = None
         self.logger = logging.getLogger("ChaosOrchestrator")
+        from chaosgen.config.connect_routing import apply_connect_profile_to_orchestrator
+
+        apply_connect_profile_to_orchestrator(self)
         self.history_store = history_store
         self._current_experiment_db_id: Optional[int] = None
         self._experiment_db_ids: Dict[str, int] = {}
@@ -92,6 +99,10 @@ class ChaosOrchestrator:
 
         self.pending_experiments: List[ChaosExperiment] = []
         self.pending_report: Optional[AdvisorReport] = None
+
+        # --- START MODIFICATION ---
+        # Form-first inject: operator environment overrides hint/auto-detect
+        # --- END MODIFICATION ---
 
         self.machine = Machine(model=self, states=ChaosOrchestrator.states, initial="idle")
         self.machine.add_transition(
@@ -150,8 +161,17 @@ class ChaosOrchestrator:
     def _initialize_modules(self) -> None:
         module_configs = self.config_loader.get_all_modules()
         inject_cfg: Dict[str, Any] = {}
-        if self._cg_settings and self._cg_settings.inject:
+        ctk_cfg: Dict[str, Any] = {}
+        connect_cfgs: Dict[str, Dict[str, Any]] = {}
+        if self._cg_settings:
+            from chaosgen.config.connect_routing import module_connect_configs, sync_inject_from_connect
+
+            sync_inject_from_connect(self._cg_settings)
+            connect_cfgs = module_connect_configs(self._cg_settings)
             inj = self._cg_settings.inject
+        else:
+            inj = None
+        if inj:
             # --- START MODIFICATION ---
             # Phase C: native client + optional SSH bastion config
             bastion = inj.ssh_bastion
@@ -167,11 +187,21 @@ class ChaosOrchestrator:
                 "ephemeral_label": inj.ephemeral_label,
                 "ssh_bastion": bastion.model_dump() if bastion else {},
             }
+            ctk_cfg = {
+                "dry_run": inj.dry_run,
+                "timeout_s": max(120, int(inj.kubectl_timeout_s) * 4),
+            }
             # --- END MODIFICATION ---
         for module_name, module_class in self.MODULE_REGISTRY.items():
             config = module_configs.get(module_name, {})
             if module_name == "kubectl-chaos":
-                config = {**inject_cfg, **config}
+                config = {**inject_cfg, **connect_cfgs.get("kubectl-chaos", {}), **config}
+            if module_name == "pumba":
+                config = {**connect_cfgs.get("pumba", {}), **config}
+            if module_name == "toxiproxy":
+                config = {**connect_cfgs.get("toxiproxy", {}), **config}
+            if module_name == "chaos-toolkit" and self._cg_settings and self._cg_settings.inject:
+                config = {**ctk_cfg, **config}
             self.modules[module_name] = module_class(config)
     
     def get_module(self, module_name: str) -> Optional[BaseChaosModule]:
@@ -185,7 +215,300 @@ class ChaosOrchestrator:
             BaseChaosModule instance or None
         """
         return self.modules.get(module_name)
-    
+
+    # --- START MODIFICATION ---
+    # Form-first: operator environment + inject fields override hints/auto-detect
+    def set_execution_environment(self, environment: str) -> None:
+        """Lock UCAL tool mapping to an operator-selected environment."""
+        from chaosgen.ucal.translator import ExecutionEnvironment
+
+        key = (environment or "").strip().lower()
+        mapping = {
+            "kubernetes": ExecutionEnvironment.KUBERNETES,
+            "k8s": ExecutionEnvironment.KUBERNETES,
+            "k3s": ExecutionEnvironment.KUBERNETES,
+            "docker": ExecutionEnvironment.DOCKER,
+            "docker_compose": ExecutionEnvironment.DOCKER,
+            "compose": ExecutionEnvironment.DOCKER,
+            "systemd": ExecutionEnvironment.SYSTEMD,
+        }
+        env = mapping.get(key)
+        if env is None:
+            raise ValueError(
+                f"Unsupported execution environment: {environment!r} "
+                "(expected kubernetes|docker|systemd)"
+            )
+        self.translator.set_environment(env)
+        self.logger.info("Execution environment locked to %s (form)", env.value)
+
+    def configure_inject_from_form(
+        self,
+        *,
+        environment: str,
+        kubeconfig: Optional[str] = None,
+        context: Optional[str] = None,
+        dry_run: Optional[bool] = None,
+        default_namespace: Optional[str] = None,
+        label_key: Optional[str] = None,
+    ) -> None:
+        """Apply Experiments form fields before translate/inject."""
+        self.set_execution_environment(environment)
+        inj = getattr(self._cg_settings, "inject", None) if self._cg_settings else None
+        if inj is not None:
+            if kubeconfig is not None:
+                inj.kubeconfig = kubeconfig or None
+            if context is not None:
+                inj.context = context or None
+            if dry_run is not None:
+                inj.dry_run = bool(dry_run)
+            if default_namespace is not None:
+                inj.default_namespace = default_namespace or "default"
+            if label_key is not None:
+                inj.label_key = label_key or "app"
+            inj.enabled = True
+            self.translator.inject = inj
+        if self._cg_settings is not None:
+            from chaosgen.config.connect_routing import apply_connect_profile_to_orchestrator
+
+            apply_connect_profile_to_orchestrator(self)
+    # --- END MODIFICATION ---
+
+    def run_ctk_experiment(
+        self,
+        *,
+        title: str,
+        description: str = "",
+        targets: Optional[List[Dict[str, Any]]] = None,
+        faults: Optional[List[Dict[str, Any]]] = None,
+        dry_run: Optional[bool] = None,
+        prom_url: Optional[str] = None,
+        label_key: str = "app",
+        kube_context: Optional[str] = None,
+        include_steady_state: bool = False,
+        action_pause_seconds: float = 0,
+        auto_rollback: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Build a CTK experiment from intents and execute via ``chaos run``.
+
+        Prefer ``faults`` (fault-centric with nested targets). Legacy ``targets`` flat list still supported.
+        """
+        import json
+        from datetime import datetime, timezone
+
+        from chaosgen.schemas.chaos_intent import (
+            CtkExperimentIntent,
+            CtkFaultIntent,
+            CtkTargetRef,
+        )
+        from chaosgen.ucal.ctk_builder import build_experiment_from_intent
+
+        inj = getattr(self._cg_settings, "inject", None) if self._cg_settings else None
+        max_n = 3
+        blocked = ["kube-system", "monitoring"]
+        if self._cg_settings and self._cg_settings.safety:
+            max_n = int(self._cg_settings.safety.max_services_per_suite)
+            blocked = list(self._cg_settings.safety.blocked_namespaces or blocked)
+
+        ctx = kube_context or (inj.context if inj else None)
+
+        if faults:
+            fault_models = []
+            for f in faults:
+                refs = [
+                    CtkTargetRef(
+                        service=str(t["service"]),
+                        namespace=str(t.get("namespace") or "default"),
+                        label_key=str(t.get("label_key") or label_key),
+                    )
+                    for t in f.get("targets") or []
+                ]
+                if not refs:
+                    raise ValueError("each fault requires at least one target")
+                fault_models.append(
+                    CtkFaultIntent(
+                        fault_type=str(f.get("fault_type") or "process_kill"),
+                        duration=str(f.get("duration") or "30s"),
+                        latency=str(f.get("latency") or "100ms"),
+                        loss_percentage=float(f.get("loss_percentage") or 10.0),
+                        signal=str(f.get("signal") or "SIGKILL"),
+                        targets=refs,
+                    )
+                )
+            experiment_intent = CtkExperimentIntent(
+                title=title,
+                description=description or title,
+                faults=fault_models,
+                max_actions=max_n,
+                blocked_namespaces=blocked,
+                prom_url=prom_url,
+                include_steady_state=include_steady_state,
+                kube_context=ctx,
+                action_pause_seconds=float(action_pause_seconds or 0),
+                auto_rollback=bool(auto_rollback),
+            )
+        elif targets:
+            from chaosgen.ucal.ctk_builder import CtkBuildIntent, CtkTargetIntent, build_experiment
+
+            intent_targets = [
+                CtkTargetIntent(
+                    service=str(t["service"]),
+                    namespace=str(t.get("namespace") or "default"),
+                    label_key=str(t.get("label_key") or label_key),
+                    fault_type=str(t.get("fault_type") or "process_kill"),
+                    duration=str(t.get("duration") or "30s"),
+                    latency=str(t.get("latency") or "100ms"),
+                    loss_percentage=float(t.get("loss_percentage") or 10.0),
+                    signal=str(t.get("signal") or "SIGKILL"),
+                )
+                for t in (targets or [])
+            ]
+            experiment = build_experiment(
+                CtkBuildIntent(
+                    title=title,
+                    description=description or title,
+                    targets=intent_targets,
+                    max_actions=max_n,
+                    blocked_namespaces=blocked,
+                    prom_url=prom_url,
+                    include_steady_state=include_steady_state,
+                    kube_context=ctx,
+                    action_pause_seconds=float(action_pause_seconds or 0),
+                    auto_rollback=bool(auto_rollback),
+                )
+            )
+        else:
+            raise ValueError("CTK experiment requires faults[] or targets[]")
+
+        if faults:
+            experiment = build_experiment_from_intent(experiment_intent)
+
+        out_dir = Path("scratch") / "ctk"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        exp_path = out_dir / f"experiment-{stamp}.json"
+        exp_path.write_text(
+            json.dumps(experiment.to_ctk_dict(), indent=2),
+            encoding="utf-8",
+        )
+        self.logger.info("Wrote CTK experiment: %s", exp_path)
+
+        mod = self.get_module("chaos-toolkit")
+        if not mod:
+            return {"success": False, "error": "chaos-toolkit module not loaded", "path": str(exp_path)}
+
+        use_dry = inj.dry_run if dry_run is None and inj else bool(dry_run)
+        if dry_run is not None:
+            use_dry = bool(dry_run)
+        # Sync module dry-run
+        if hasattr(mod, "dry_run"):
+            mod.dry_run = use_dry
+
+        # Ensure kubeconfig visible to chaosk8s
+        if inj and inj.kubeconfig:
+            os.environ.setdefault("KUBECONFIG", str(Path(inj.kubeconfig).expanduser()))
+        if ctx:
+            os.environ.setdefault("KUBERNETES_CONTEXT", ctx)
+
+        self._ctk_run_active = True
+        try:
+            result = mod.execute(
+                "run_experiment",
+                {"experiment_file": str(exp_path), "dry_run": use_dry},
+            )
+        finally:
+            self._ctk_run_active = False
+
+        result["experiment_path"] = str(exp_path)
+        result["ctk_title"] = title
+        try:
+            report = self._evaluate_ctk_run(
+                result,
+                title=title,
+                description=description or title,
+            )
+            self.last_verdict_report = report
+            result["verdict"] = report.verdict.value
+            self.last_outcome = report.verdict.value.upper()
+        except Exception as exc:
+            self.logger.warning("CTK verdict evaluation failed: %s", exc)
+            if result.get("aborted"):
+                self.last_outcome = "ABORTED"
+            elif result.get("success"):
+                self.last_outcome = "PASS" if not result.get("deviated") else "FAIL"
+            else:
+                self.last_outcome = "FAIL"
+        self.logger.info(
+            "CTK run finished success=%s aborted=%s status=%s journal=%s verdict=%s",
+            result.get("success"),
+            result.get("aborted"),
+            result.get("journal_status"),
+            result.get("journal_path"),
+            result.get("verdict"),
+        )
+        return result
+
+    def _evaluate_ctk_run(
+        self,
+        result: Dict[str, Any],
+        *,
+        title: str,
+        description: str,
+        acceptance_criteria: Optional[Dict[str, Any]] = None,
+    ):
+        """Parse CTK journal and build ExpectationVerdictReport (+ optional Prom merge)."""
+        from chaosgen.evaluation.ctk_verdict import build_verdict_from_ctk_run
+        from chaosgen.advisor.report_store import save_verdict_report
+        from chaosgen.config.telemetry_endpoints import resolve_prometheus_url
+
+        prom_url: Optional[str] = None
+        try:
+            prom_url = resolve_prometheus_url()
+        except Exception:
+            pass
+
+        criteria = acceptance_criteria
+        if criteria is None:
+            demo = Path("examples/demo-expectation-criteria.yaml")
+            if demo.is_file():
+                import yaml
+
+                criteria = yaml.safe_load(demo.read_text(encoding="utf-8")) or None
+
+        report = build_verdict_from_ctk_run(
+            result,
+            experiment_name=title,
+            description=description,
+            acceptance_criteria=criteria,
+            prometheus_url=prom_url,
+            poll_telemetry=not bool(result.get("dry_run")),
+        )
+        save_verdict_report(report)
+        return report
+
+    def halt_active_experiment(self) -> Dict[str, Any]:
+        """
+        HALT / ABORT: stop in-flight CTK ``chaos run`` then legacy rollback + inject-gc.
+
+        Phase 1 — kill orchestrator subprocess (Popen tree).
+        Phase 2 — state-machine rollback (manifests + inject-gc).
+        """
+        outcome: Dict[str, Any] = {"ctk_aborted": False}
+
+        mod = self.get_module("chaos-toolkit")
+        if mod and (self._ctk_run_active or getattr(mod, "is_run_active", lambda: False)()):
+            if hasattr(mod, "abort_run"):
+                outcome["ctk_aborted"] = bool(mod.abort_run())
+                self.logger.warning("HALT: CTK subprocess abort requested")
+
+        self.last_outcome = "ABORTED"
+        try:
+            self.trigger_rollback()
+        except Exception as exc:
+            self.logger.warning("HALT rollback transition failed: %s", exc)
+
+        return outcome
+
     def list_modules(self) -> List[str]:
         """
         List all available chaos modules.
@@ -350,6 +673,7 @@ class ChaosOrchestrator:
             self.current_experiment.steady_state_check = check or None
 
         try:
+            # MODIFIED: inject-time blast-radius gate (G2) — also re-checked in _execute_injection
             self.blast_radius_controller.validate_experiment(self.current_experiment)
         except ValueError as e:
             self.logger.error("Safety Policy Violation: %s", e)
@@ -388,27 +712,43 @@ class ChaosOrchestrator:
 
         if check:
             success = self.validator.validate(check)
-            if success:
-                self._start_dead_mans_switch()
 
+        # --- START MODIFICATION ---
+        # G3: always arm Dead Man's Switch before inject when steady-state path succeeds
         if success:
+            self._start_dead_mans_switch()
             self.logger.info("Steady-state check passed.")
             self.check_passed()
         else:
             self.logger.error("Steady-state check failed. Aborting.")
             self.last_outcome = "FAIL"
             self.check_failed()
+        # --- END MODIFICATION ---
 
     def _start_dead_mans_switch(self):
-        if self.current_experiment and self.current_experiment.steady_state_check:
-            self.dead_mans_switch = DeadMansSwitch(
-                check_fn=lambda: self.validator.validate(
-                    self.current_experiment.steady_state_check
-                ),
-                trigger_fn=self.trigger_rollback,
-                interval=5,
+        # --- START MODIFICATION ---
+        # G3: fall back to default Prom check when experiment has none
+        if not self.current_experiment:
+            return
+        check = self.current_experiment.steady_state_check
+        if not check:
+            check = self._default_steady_state()
+            if check:
+                self.current_experiment.steady_state_check = check
+        if not check:
+            self.logger.warning(
+                "Dead man's switch not started: no steady-state check available"
             )
-            self.dead_mans_switch.start()
+            return
+        self.dead_mans_switch = DeadMansSwitch(
+            check_fn=lambda: self.validator.validate(
+                self.current_experiment.steady_state_check
+            ),
+            trigger_fn=self.trigger_rollback,
+            interval=5,
+        )
+        self.dead_mans_switch.start()
+        # --- END MODIFICATION ---
 
     def _cleanup_safety(self):
         if self.dead_mans_switch:
@@ -418,6 +758,17 @@ class ChaosOrchestrator:
     def _execute_injection(self):
         """Translate faults → ActionPlans → kubectl apply / delete_pod."""
         self.logger.info("Injecting faults...")
+        # --- START MODIFICATION ---
+        # G2: defense-in-depth — re-validate blast radius immediately before inject
+        try:
+            if self.current_experiment is not None:
+                self.blast_radius_controller.validate_experiment(self.current_experiment)
+        except ValueError as e:
+            self.logger.error("Safety Policy Violation at inject: %s", e)
+            self.last_outcome = "FAIL"
+            self.trigger_rollback()
+            return
+        # --- END MODIFICATION ---
         try:
             plans = self.translator.translate(self.current_experiment)
             self.active_plans = plans
@@ -642,6 +993,14 @@ class ChaosOrchestrator:
             self._suite_abort = True
             self.active_manifests = list(self.suite_manifests) + list(self.active_manifests)
             self.suite_manifests = []
+
+        # --- START MODIFICATION ---
+        # HALT / CTK: sweep ephemeral Chaos Mesh CRs after abort
+        # --- END MODIFICATION ---
+        try:
+            self.inject_gc()
+        except Exception as exc:
+            self.logger.warning("inject_gc during rollback: %s", exc)
 
         status = self._rollback_manifests(best_effort=False)
         if status != "pass" and not self.last_outcome:

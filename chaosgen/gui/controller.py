@@ -156,6 +156,23 @@ class AppController(QObject):
             lambda err: self.experiment_finished.emit(False, err)
         )
         self._spawn(worker)
+
+    def run_ctk_experiment_async(self, **kwargs):
+        title = kwargs.get("title") or "ctk-experiment"
+        self.experiment_started.emit(title)
+        worker = AsyncWorker(self.orchestrator.run_ctk_experiment, **kwargs)
+        worker.signals.finished.connect(
+            lambda result: self.experiment_finished.emit(
+                bool((result or {}).get("success")) or (result or {}).get("verdict") == "pass",
+                (result or {}).get("message")
+                or (result or {}).get("error")
+                or f"CTK finished — verdict={(result or {}).get('verdict') or 'unknown'}",
+            )
+        )
+        worker.signals.error.connect(
+            lambda err: self.experiment_finished.emit(False, err)
+        )
+        self._spawn(worker)
     # --- END MODIFICATION ---
 
     def run_advisor_async(self, advisor, lookback_hours: int):
@@ -220,7 +237,10 @@ class AppController(QObject):
         self.state_changed.emit(self.state)
 
     def trigger_rollback(self):
-        self.orchestrator.trigger_rollback()
+        # --- START MODIFICATION ---
+        # HALT: CTK subprocess kill + cluster cleanup before legacy rollback
+        # --- END MODIFICATION ---
+        self.orchestrator.halt_active_experiment()
         self.state_changed.emit(self.state)
 
     # ------------------------------------------------------------------

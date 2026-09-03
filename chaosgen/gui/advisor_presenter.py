@@ -74,10 +74,14 @@ def is_fallback(description: UnknownScenarioDescription) -> bool:
     return bool(description.metadata.get("describe_fallback"))
 
 
-def promote_blocked_reason(description: UnknownScenarioDescription) -> Optional[str]:
+def promote_blocked_reason(
+    description: UnknownScenarioDescription,
+    verdict: Optional["ExperimentVerdict"] = None,
+) -> Optional[str]:
     """Return a human-readable block reason, or None if the description can promote.
 
     Mirrors the P3 promote guards enforced by ``CatalogPromoter``.
+    When ``verdict`` is supplied, non-PASS blocks promotion (Option B).
     """
     if is_fallback(description):
         return "P2 fallback descriptions cannot be promoted (re-run describe)."
@@ -86,6 +90,14 @@ def promote_blocked_reason(description: UnknownScenarioDescription) -> Optional[
             f"Only DESCRIBED incidents can be promoted "
             f"(state={description.knowledge_state.value})."
         )
+    if verdict is not None:
+        from chaosgen.schemas.scenarios import ExperimentVerdict
+
+        if verdict != ExperimentVerdict.PASS:
+            return (
+                f"Only Expectation Verdict PASS can promote "
+                f"(got {verdict.value})."
+            )
     return None
 
 

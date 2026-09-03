@@ -1,0 +1,39 @@
+# P0 — Modular monolith operational expectations (WS-5)
+#
+# Use after Pumba kill/pause on monolith-app or netem on module-api.
+# Edit host ports if your lab binds differently.
+
+claim: >
+  After SIGKILL on the monolith-app container, HTTP health and blackbox probe
+  success recover within 45 seconds (Docker restart policy always).
+
+expectations:
+  - id: monolith_http_alive
+    type: http_health
+    url: http://127.0.0.1:18081/health
+    required: true
+
+  - id: module_api_http_alive
+    type: http_health
+    url: http://127.0.0.1:18082/health
+    required: false
+
+  - id: monolith_probe_recovery
+    type: prometheus_threshold
+    url: http://127.0.0.1:19090
+    query: probe_success{instance="http://monolith-app/health"}
+    op: ">="
+    threshold: 1
+    window_seconds: 45
+    sample_interval_seconds: 5
+    required: true
+
+  - id: module_api_still_probed
+    type: prometheus_threshold
+    url: http://127.0.0.1:19090
+    query: probe_success{instance="http://module-api/health"}
+    op: ">="
+    threshold: 1
+    window_seconds: 30
+    sample_interval_seconds: 5
+    required: false

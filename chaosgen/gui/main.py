@@ -273,6 +273,10 @@ class MainWindow(QWidget):
 
     def _connect_signals(self):
         self._settings_view.settings_saved.connect(self._advisor_view.refresh_credentials)
+        # --- START MODIFICATION ---
+        # Settings Save → refresh Experiments connect panels (K8s / Docker)
+        # --- END MODIFICATION ---
+        self._settings_view.settings_saved.connect(self._experiments_view.reload_settings)
         self._dashboard.navigate_requested.connect(self.navigate_to)
         self._experiments_view.navigate_requested.connect(self.navigate_to)
         self.controller.log_message.connect(self._log_console.append_log)
@@ -309,14 +313,21 @@ class MainWindow(QWidget):
         self._state_dot.set_state(dot_map.get(state, "unknown"))
 
 
-    def _on_catalog_scenario_queued(self, experiment) -> None:
-        """Push a catalog scenario into the orchestrator's pending approval queue."""
+    def _on_catalog_scenario_queued(self, experiment, metadata=None) -> None:
+        """Push a catalog scenario into approval queue and stage on Experiments view."""
         try:
             self.controller.submit_catalog_experiment(experiment)
+            # --- START MODIFICATION ---
+            # Forward GUI-only catalog metadata (architecture / suggested env).
+            # --- END MODIFICATION ---
+            self._experiments_view.load_staged_scenario(experiment, metadata=metadata)
             self._switch_page(_PAGE_EXPERIMENTS, "Experiments")
-            self._log_console.append_log(f"Catalog scenario queued: {experiment.name}")
+            self._nav.setCurrentItem("experiments")
+            self._log_console.append_log(
+                f"Catalog scenario staged: {getattr(experiment, 'name', 'experiment')}"
+            )
         except Exception as exc:
-            self._log_console.append_log(f"Error queuing scenario: {exc}")
+            self._log_console.append_log(f"Error staging scenario: {exc}")
 
 
 def run_gui():

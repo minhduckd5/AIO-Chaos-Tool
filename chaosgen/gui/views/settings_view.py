@@ -1,8 +1,8 @@
 """
-Settings View — API keys, discovery hints, and observability auth configuration.
+Settings View — API keys, architecture profile, connect block, observability auth.
 
-Keys are stored in XDG-compliant config dir via chaosgen.config.secrets.
-Discovery hints are stored in settings.yaml via chaosgen.config.settings.
+Keys: chaosgen.config.secrets (.env)
+Profile + connect: chaosgen.config.settings (settings.yaml)
 """
 
 from __future__ import annotations
@@ -28,17 +28,39 @@ from PySide6.QtWidgets import (
 )
 
 from chaosgen.config.paths import SECRETS_FILE
+from chaosgen.config.profile_presets import default_environment_for, profile_priority_tier
+from chaosgen.config.profile_validation import validate_profile_connect
 from chaosgen.gui.theme import Colors
+from chaosgen.schemas.discovery import ArchitectureType, EnvironmentType
 
 logger = logging.getLogger(__name__)
 
 _PLACEHOLDER_EMPTY_KEY = "Paste API key here…"
 _PLACEHOLDER_SAVED_KEY = "✓ Key saved on disk — leave empty to keep, paste to replace"
 
+_ARCH_VALUES = (
+    "monolith",
+    "modular_monolith",
+    "microservices",
+    "event_driven",
+    "client_server",
+    "serverless",
+)
+
+_ENV_VALUES = (
+    "kubernetes",
+    "docker_compose",
+    "bare_metal",
+    "cloud_vm",
+    "serverless",
+)
+
+_BROKER_TYPES = ("kafka", "redpanda", "rabbitmq", "nats")
+
 
 class SettingsView(QWidget):
     """
-    Settings view — discovery hints, observability auth, LLM provider API keys.
+    Settings view — form-first architecture profile, connect credentials, API keys.
 
     Sidebar nav item: "Settings"
     """
@@ -48,6 +70,7 @@ class SettingsView(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._setup_ui()
+        self._arch_combo.currentIndexChanged.connect(self._on_arch_changed)
         self._load_current_values()
 
     # ------------------------------------------------------------------
@@ -67,20 +90,21 @@ class SettingsView(QWidget):
         root.addWidget(title)
 
         subtitle = QLabel(
-            f"Discovery hints (settings.yaml) and API keys ({SECRETS_FILE})."
+            "Form-first profile mode: select architecture + connect credentials manually. "
+            "Heuristic auto-discovery is disabled. "
+            f"Secrets: {SECRETS_FILE}"
         )
         subtitle.setWordWrap(True)
         subtitle.setObjectName("viewSubtitle")
         root.addWidget(subtitle)
 
-        # --- Permission warning banner ---
         self._perm_warning = QLabel()
         self._perm_warning.setObjectName("warningBanner")
         self._perm_warning.setWordWrap(True)
         self._perm_warning.setVisible(False)
         root.addWidget(self._perm_warning)
 
-        # --- Telemetry endpoints (Way 1 live stack) ---
+        # --- Telemetry ---
         telem_group = QGroupBox("Telemetry Endpoints (registry-vm)")
         telem_form = QFormLayout(telem_group)
         from chaosgen.config.telemetry_endpoints import DEFAULT_LOKI_URL, DEFAULT_PROMETHEUS_URL
@@ -91,25 +115,80 @@ class SettingsView(QWidget):
         telem_form.addRow("Loki URL:", self._loki_url)
         root.addWidget(telem_group)
 
-        # --- Discovery Hints ---
-        hints_group = QGroupBox("Discovery Hints")
-        hints_form = QFormLayout(hints_group)
+        # --- Architecture profile ---
+        profile_group = QGroupBox("Architecture Profile (manual — auto-detect disabled)")
+        profile_form = QFormLayout(profile_group)
 
+        arch_row = QWidget()
+        arch_layout = QHBoxLayout(arch_row)
+        arch_layout.setContentsMargins(0, 0, 0, 0)
         self._arch_combo = QComboBox()
-        self._arch_combo.addItem("Auto-detect", None)
-        for val in ("monolith", "modular_monolith", "microservices", "event_driven", "client_server", "serverless"):
-            self._arch_combo.addItem(val, val)
-        hints_form.addRow("Architecture:", self._arch_combo)
+        for val in _ARCH_VALUES:
+            self._arch_combo.addItem(val.replace("_", " ").title(), val)
+        arch_layout.addWidget(self._arch_combo, stretch=1)
+        self._tier_badge = QLabel("")
+        self._tier_badge.setMinimumWidth(100)
+        arch_layout.addWidget(self._tier_badge)
+        profile_form.addRow("Architecture:", arch_row)
 
         self._env_combo = QComboBox()
-        self._env_combo.addItem("Auto-detect", None)
-        for val in ("kubernetes", "docker_compose", "bare_metal", "cloud_vm", "serverless"):
-            self._env_combo.addItem(val, val)
-        hints_form.addRow("Environment:", self._env_combo)
+        self._env_combo.addItem("(preset default)", None)
+        for val in _ENV_VALUES:
+            self._env_combo.addItem(val.replace("_", " ").title(), val)
+        profile_form.addRow("Environment:", self._env_combo)
 
-        root.addWidget(hints_group)
+        root.addWidget(profile_group)
 
-        # --- Essentials: Ollama + observability ---
+        # --- Connect: Kubernetes ---
+        k8s_group = QGroupBox("Connect — Kubernetes")
+        k8s_form = QFormLayout(k8s_group)
+        self._kubeconfig = QLineEdit()
+        self._kubeconfig.setPlaceholderText("~/.kube/config")
+        self._kube_context = QLineEdit()
+        self._kube_namespace = QLineEdit("default")
+        k8s_form.addRow("Kubeconfig:", self._kubeconfig)
+        k8s_form.addRow("Context:", self._kube_context)
+        k8s_form.addRow("Default namespace:", self._kube_namespace)
+        root.addWidget(k8s_group)
+
+        # --- Connect: Docker ---
+        docker_group = QGroupBox("Connect — Docker / Compose")
+        docker_form = QFormLayout(docker_group)
+        self._docker_host = QLineEdit()
+        self._docker_host.setPlaceholderText("unix:///var/run/docker.sock")
+        self._compose_file = QLineEdit()
+        self._compose_file.setPlaceholderText("labs/modular-monolith/docker-compose.yml")
+        self._compose_project = QLineEdit()
+        docker_form.addRow("Docker host:", self._docker_host)
+        docker_form.addRow("Compose file:", self._compose_file)
+        docker_form.addRow("Compose project:", self._compose_project)
+        root.addWidget(docker_group)
+
+        # --- Connect: Broker (event-driven) ---
+        broker_group = QGroupBox("Connect — Message Broker (event-driven)")
+        broker_form = QFormLayout(broker_group)
+        self._broker_type = QComboBox()
+        self._broker_type.addItem("(select type)", None)
+        for bt in _BROKER_TYPES:
+            self._broker_type.addItem(bt, bt)
+        self._broker_bootstrap = QLineEdit()
+        self._broker_bootstrap.setPlaceholderText("localhost:9092")
+        self._broker_admin = QLineEdit()
+        self._broker_admin.setPlaceholderText("http://127.0.0.1:9644 (Redpanda admin)")
+        broker_form.addRow("Broker type:", self._broker_type)
+        broker_form.addRow("Bootstrap *:", self._broker_bootstrap)
+        broker_form.addRow("Admin API URL:", self._broker_admin)
+        root.addWidget(broker_group)
+
+        # --- Connect: Toxiproxy ---
+        tox_group = QGroupBox("Connect — Toxiproxy (client-server)")
+        tox_form = QFormLayout(tox_group)
+        self._toxiproxy_url = QLineEdit()
+        self._toxiproxy_url.setPlaceholderText("http://127.0.0.1:8474")
+        tox_form.addRow("API URL:", self._toxiproxy_url)
+        root.addWidget(tox_group)
+
+        # --- Ollama ---
         ollama_group = QGroupBox("Local Ollama (default - no API key required)")
         ollama_form = QFormLayout(ollama_group)
         self._ollama_url = QLineEdit()
@@ -119,21 +198,14 @@ class SettingsView(QWidget):
 
         obs_group = QGroupBox("Observability Auth (for tools behind auth)")
         obs_form = QFormLayout(obs_group)
-
         self._prom_token_row, self._prom_token, self._prom_token_status = self._make_secret_field_row()
         obs_form.addRow("Prometheus Token:", self._prom_token_row)
-
         self._loki_token_row, self._loki_token, self._loki_token_status = self._make_secret_field_row()
         obs_form.addRow("Loki Token:", self._loki_token_row)
-
         self._grafana_pw_row, self._grafana_pw, self._grafana_pw_status = self._make_secret_field_row()
         obs_form.addRow("Grafana Password:", self._grafana_pw_row)
-
         root.addWidget(obs_group)
 
-        # --- START MODIFICATION ---
-        # Advanced disclosure: cloud keys + developer mode
-        # --- END MODIFICATION ---
         self._advanced_toggle = QCheckBox("Show advanced settings (cloud LLM keys, developer mode)")
         self._advanced_toggle.setStyleSheet(f"color: {Colors.TEXT_SECONDARY};")
         root.addWidget(self._advanced_toggle)
@@ -152,9 +224,7 @@ class SettingsView(QWidget):
         cloud_group = QGroupBox("Cloud LLM Providers")
         cloud_layout = QVBoxLayout(cloud_group)
         cloud_hint = QLabel(
-            "API keys are stored in your local .env file and hidden after save for security. "
-            "A ✓ Saved badge means the key is on disk — you do not need to paste it again. "
-            "For 9router on the same machine, prefer http://127.0.0.1:PORT/v1 over a Tailscale IP."
+            "API keys are stored in your local .env file and hidden after save for security."
         )
         cloud_hint.setWordWrap(True)
         cloud_hint.setStyleSheet(f"color: {Colors.TEXT_SECONDARY}; font-size: 11px;")
@@ -164,31 +234,23 @@ class SettingsView(QWidget):
 
         self._openai_key_row, self._openai_key, self._openai_key_status = self._make_secret_field_row()
         cloud_form.addRow("OpenAI API Key:", self._openai_key_row)
-
         self._openai_base_url = QLineEdit()
-        self._openai_base_url.setPlaceholderText(
-            "9router on this PC: http://127.0.0.1:20128/v1 — tailnet IP only if Tailscale is up"
-        )
+        self._openai_base_url.setPlaceholderText("http://127.0.0.1:20128/v1")
         cloud_form.addRow("OpenAI Base URL:", self._openai_base_url)
-
         self._anthropic_key_row, self._anthropic_key, self._anthropic_key_status = self._make_secret_field_row()
         cloud_form.addRow("Anthropic API Key:", self._anthropic_key_row)
-
         self._groq_key_row, self._groq_key, self._groq_key_status = self._make_secret_field_row()
         cloud_form.addRow("Groq API Key:", self._groq_key_row)
-
         advanced_layout.addWidget(cloud_group)
         self._advanced_container.setVisible(False)
         self._advanced_toggle.toggled.connect(self._advanced_container.setVisible)
         root.addWidget(self._advanced_container)
 
-        # --- Save / clear buttons ---
         btn_row = QHBoxLayout()
         save_btn = QPushButton("Save All")
         save_btn.setObjectName("primaryButton")
         save_btn.clicked.connect(self._on_save)
         btn_row.addWidget(save_btn)
-
         clear_btn = QPushButton("Clear All Keys")
         clear_btn.clicked.connect(self._on_clear)
         btn_row.addWidget(clear_btn)
@@ -197,7 +259,6 @@ class SettingsView(QWidget):
 
         self._status = QLabel("")
         root.addWidget(self._status)
-
         root.addStretch()
 
         scroll.setWidget(container)
@@ -206,14 +267,11 @@ class SettingsView(QWidget):
         outer.addWidget(scroll)
 
     def _make_secret_field_row(self) -> tuple[QWidget, QLineEdit, QLabel]:
-        """Password field + green 'Saved' badge (keys are never re-displayed)."""
         field = QLineEdit()
         field.setEchoMode(QLineEdit.EchoMode.Password)
         field.setPlaceholderText(_PLACEHOLDER_EMPTY_KEY)
-
         status = QLabel("")
         status.setMinimumWidth(72)
-
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -233,7 +291,6 @@ class SettingsView(QWidget):
         ]
 
     def _sync_secret_fields_from_disk(self) -> list[str]:
-        """Refresh placeholders/badges from .env; return human names of stored keys."""
         from chaosgen.config.secrets import load_secrets
 
         secrets = load_secrets()
@@ -250,14 +307,44 @@ class SettingsView(QWidget):
                 status.setText("")
         return stored
 
+    def _update_tier_badge(self) -> None:
+        arch_val = self._arch_combo.currentData()
+        if not arch_val:
+            self._tier_badge.setText("")
+            return
+        arch = ArchitectureType(arch_val)
+        tier = profile_priority_tier(arch)
+        if tier == "P0":
+            label = "P0 Live"
+            color = Colors.SUCCESS
+        else:
+            label = "P1 Dry-run"
+            color = Colors.WARNING
+        self._tier_badge.setText(label)
+        self._tier_badge.setStyleSheet(
+            f"color: {color}; font-weight: bold; padding: 2px 8px; "
+            f"border: 1px solid {color}; border-radius: 4px;"
+        )
+
+    def _on_arch_changed(self) -> None:
+        self._update_tier_badge()
+        arch_val = self._arch_combo.currentData()
+        if not arch_val:
+            return
+        default_env = default_environment_for(ArchitectureType(arch_val))
+        idx = self._env_combo.findData(default_env.value)
+        if idx >= 0 and self._env_combo.currentData() is None:
+            self._env_combo.setCurrentIndex(idx)
+
     # ------------------------------------------------------------------
-    # Load existing values
+    # Load / save helpers
     # ------------------------------------------------------------------
 
     def _load_current_values(self) -> None:
         try:
             from chaosgen.config.secrets import load_secrets
             from chaosgen.config.settings import load_settings
+            from chaosgen.schemas.discovery import ObservabilityTool
 
             secrets = load_secrets()
             self._ollama_url.setText(secrets.get("OLLAMA_URL") or "http://localhost:11434")
@@ -266,27 +353,102 @@ class SettingsView(QWidget):
             self._sync_secret_fields_from_disk()
 
             settings = load_settings()
-            from chaosgen.schemas.discovery import ObservabilityTool
-
             for hint in settings.hints.observability:
                 if hint.tool == ObservabilityTool.PROMETHEUS:
                     self._prom_url.setText(hint.url)
                 elif hint.tool == ObservabilityTool.LOKI:
                     self._loki_url.setText(hint.url)
-            if settings.hints.architecture:
-                idx = self._arch_combo.findData(settings.hints.architecture.value)
-                if idx >= 0:
-                    self._arch_combo.setCurrentIndex(idx)
+
+            arch = settings.hints.architecture or ArchitectureType.MICROSERVICES
+            idx = self._arch_combo.findData(arch.value)
+            if idx >= 0:
+                self._arch_combo.setCurrentIndex(idx)
+
             if settings.hints.environment:
-                idx = self._env_combo.findData(settings.hints.environment.value)
-                if idx >= 0:
-                    self._env_combo.setCurrentIndex(idx)
+                eidx = self._env_combo.findData(settings.hints.environment.value)
+                if eidx >= 0:
+                    self._env_combo.setCurrentIndex(eidx)
+
+            conn = settings.connect
+            kc = conn.kubernetes.kubeconfig or settings.inject.kubeconfig
+            if kc:
+                self._kubeconfig.setText(kc)
+            if conn.kubernetes.context:
+                self._kube_context.setText(conn.kubernetes.context)
+            if conn.kubernetes.default_namespace:
+                self._kube_namespace.setText(conn.kubernetes.default_namespace)
+            if conn.docker.host:
+                self._docker_host.setText(conn.docker.host)
+            if conn.docker.compose_file:
+                self._compose_file.setText(conn.docker.compose_file)
+            if conn.docker.project_name:
+                self._compose_project.setText(conn.docker.project_name)
+            if conn.broker.type:
+                bidx = self._broker_type.findData(conn.broker.type)
+                if bidx >= 0:
+                    self._broker_type.setCurrentIndex(bidx)
+            if conn.broker.bootstrap:
+                self._broker_bootstrap.setText(conn.broker.bootstrap)
+            if conn.broker.admin_api_url:
+                self._broker_admin.setText(conn.broker.admin_api_url)
+            if conn.toxiproxy.api_url:
+                self._toxiproxy_url.setText(conn.toxiproxy.api_url)
+
             self._developer_mode_cb.setChecked(settings.developer_mode)
+            self._update_tier_badge()
 
         except Exception as exc:
             logger.warning("Could not load settings: %s", exc)
 
         self._check_permissions()
+
+    def _apply_form_to_settings(self, settings) -> None:
+        from chaosgen.config.settings import AuthConfig, ObservabilityHint
+        from chaosgen.schemas.discovery import ObservabilityTool
+
+        arch_val = self._arch_combo.currentData()
+        env_val = self._env_combo.currentData()
+
+        settings.hints.architecture = ArchitectureType(arch_val) if arch_val else ArchitectureType.MICROSERVICES
+        settings.hints.environment = EnvironmentType(env_val) if env_val else None
+        settings.hints.skip_auto_detect = True
+
+        settings.connect.kubernetes.kubeconfig = self._kubeconfig.text().strip() or None
+        settings.connect.kubernetes.context = self._kube_context.text().strip() or None
+        ns = self._kube_namespace.text().strip()
+        settings.connect.kubernetes.default_namespace = ns or "default"
+
+        settings.connect.docker.host = self._docker_host.text().strip() or None
+        settings.connect.docker.compose_file = self._compose_file.text().strip() or None
+        settings.connect.docker.project_name = self._compose_project.text().strip() or None
+
+        broker_type = self._broker_type.currentData()
+        settings.connect.broker.type = broker_type
+        settings.connect.broker.bootstrap = self._broker_bootstrap.text().strip() or None
+        settings.connect.broker.admin_api_url = self._broker_admin.text().strip() or None
+
+        settings.connect.toxiproxy.api_url = self._toxiproxy_url.text().strip() or None
+
+        # Legacy inject path — keep boutique kubeconfig working
+        if settings.connect.kubernetes.kubeconfig:
+            settings.inject.kubeconfig = settings.connect.kubernetes.kubeconfig
+        if settings.connect.kubernetes.context:
+            settings.inject.context = settings.connect.kubernetes.context
+        settings.inject.default_namespace = settings.connect.kubernetes.default_namespace
+
+        prom_url = self._prom_url.text().strip()
+        loki_url = self._loki_url.text().strip()
+        obs = []
+        if prom_url:
+            obs.append(ObservabilityHint(
+                tool=ObservabilityTool.PROMETHEUS, url=prom_url, auth=AuthConfig(),
+            ))
+        if loki_url:
+            obs.append(ObservabilityHint(
+                tool=ObservabilityTool.LOKI, url=loki_url, auth=AuthConfig(),
+            ))
+        settings.hints.observability = obs
+        settings.developer_mode = self._developer_mode_cb.isChecked()
 
     def _check_permissions(self) -> None:
         if os.name == "nt" or not SECRETS_FILE.exists():
@@ -308,16 +470,8 @@ class SettingsView(QWidget):
 
     def _on_save(self) -> None:
         try:
-            from chaosgen.config.secrets import save_secret
+            from chaosgen.config.secrets import delete_secret, save_secret
             from chaosgen.config.settings import load_settings, save_settings
-            from chaosgen.config.settings import AuthConfig, ObservabilityHint
-            from chaosgen.schemas.discovery import (
-                ArchitectureType,
-                EnvironmentType,
-                ObservabilityTool,
-            )
-
-            from chaosgen.config.secrets import delete_secret
 
             url = self._ollama_url.text().strip()
             if url:
@@ -337,37 +491,32 @@ class SettingsView(QWidget):
                     updated_labels.append(label)
 
             settings = load_settings()
-            arch_val = self._arch_combo.currentData()
-            settings.hints.architecture = ArchitectureType(arch_val) if arch_val else None
-            env_val = self._env_combo.currentData()
-            settings.hints.environment = EnvironmentType(env_val) if env_val else None
-            settings.hints.skip_auto_detect = True
-            settings.hints.architecture = settings.hints.architecture or ArchitectureType.MICROSERVICES
+            self._apply_form_to_settings(settings)
 
-            prom_url = self._prom_url.text().strip()
-            loki_url = self._loki_url.text().strip()
-            obs = []
-            if prom_url:
-                obs.append(ObservabilityHint(
-                    tool=ObservabilityTool.PROMETHEUS, url=prom_url, auth=AuthConfig(),
-                ))
-            if loki_url:
-                obs.append(ObservabilityHint(
-                    tool=ObservabilityTool.LOKI, url=loki_url, auth=AuthConfig(),
-                ))
-            settings.hints.observability = obs
-            settings.developer_mode = self._developer_mode_cb.isChecked()
+            validation = validate_profile_connect(settings)
+            if not validation.ok:
+                QMessageBox.warning(
+                    self,
+                    "Profile validation failed",
+                    "Cannot save — fix the following:\n\n• "
+                    + "\n• ".join(validation.errors),
+                )
+                self._status.setText("Save blocked: connect profile incomplete.")
+                self._status.setStyleSheet(f"color: {Colors.DANGER};")
+                return
+
             save_settings(settings)
 
             stored = self._sync_secret_fields_from_disk()
+            tier = validation.tier
             if updated_labels:
-                msg = f"Saved. Updated: {', '.join(updated_labels)}."
+                msg = f"Saved ({tier}). Updated keys: {', '.join(updated_labels)}."
             elif stored:
-                msg = f"Settings saved. Keys on disk: {', '.join(stored)}."
+                msg = f"Profile saved ({tier}). Keys on disk: {', '.join(stored)}."
             else:
-                msg = "Settings saved (no API keys stored yet)."
+                msg = f"Profile saved ({tier})."
             self._status.setText(msg)
-            self._status.setStyleSheet("color: #4ade80;")
+            self._status.setStyleSheet(f"color: {Colors.SUCCESS};")
             self._check_permissions()
             self.settings_saved.emit()
 
@@ -378,7 +527,8 @@ class SettingsView(QWidget):
 
     def _on_clear(self) -> None:
         reply = QMessageBox.question(
-            self, "Confirm Clear",
+            self,
+            "Confirm Clear",
             f"Delete all stored API keys from {SECRETS_FILE}?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
@@ -386,6 +536,7 @@ class SettingsView(QWidget):
             return
         try:
             from chaosgen.config.secrets import _KNOWN_KEYS, delete_secret
+
             for key in _KNOWN_KEYS:
                 delete_secret(key)
             self._openai_base_url.clear()

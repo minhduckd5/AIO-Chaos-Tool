@@ -1,5 +1,9 @@
-# ChaosGen settings — microservices-demo registry-vm live stack (Way 1)
-# Copy to ~/.config/chaosgen/settings.yaml or pass: chaosgen analyze --config examples/registry-vm-settings.yaml
+# ChaosGen settings — microservices-demo registry-vm live stack (Phase 2 aligned)
+# Copy to ~/.config/chaosgen/settings.yaml or pass:
+#   chaosgen analyze --config examples/registry-vm-settings.yaml
+#
+# Observability stack: registry-vm @ 10.50.1.220 (microservices-demo-1 Sprint A–C)
+# Golden signals: Prometheus recording rules boutique:http_* (service_name label)
 
 hints:
   architecture: microservices
@@ -7,42 +11,57 @@ hints:
   skip_auto_detect: true
   observability:
     - tool: prometheus
-      url: http://192.168.31.220:9090
+      url: http://10.50.1.220:9090
       auth:
         auth_type: none
     - tool: loki
-      url: http://192.168.31.220:3100
+      url: http://10.50.1.220:3100
       auth:
         auth_type: none
 
 llm_provider: ollama
 llm_model: llama3.2:3b
 
-# P7 — telemetry window defaults + anomaly clustering
+# Live collection window — match Prometheus scrape (30s) with reasonable step
 telemetry:
   default_lookback_hours: 24
-  step: "60s"
+  step: "15s"
 
 anomaly:
-  clustering_mode: auto       # auto | fixed
-  n_clusters: 5               # used when clustering_mode=fixed
+  clustering_mode: auto
+  n_clusters: 5
   min_clusters: 2
   max_clusters: 15
   contamination: 0.1
   default_model_path: models/merged_canonical.joblib
 
-# P8 — analysis & ranking tuning (defaults match pre-P8 code behavior)
 features:
-  rolling_window_seconds: 300   # alias: window_size_seconds
-  resample_step_seconds: 60     # alias: step_seconds
+  rolling_window_seconds: 300
+  resample_step_seconds: 60
   zscore_threshold: 3.0
   canonical_enabled: true
   canonical_rules_path: examples/canonical_features.yaml
 
 ingest:
-  log_query: '{namespace=~".+"}'
-  # custom_promql:
-  #   http_5xx_rate: 'sum(rate(http_requests_total{status=~"5.."}[5m])) by (service)'
+  # Promtail on K3s → remote Loki (namespace/app labels from Sprint A2)
+  log_query: '{namespace="default", app=~".+"}'
+  # Canonical metrics from microservices-demo recording rules + KSM + synthetics.
+  # Series appear as custom__<key>__* with service_name label (not spanmetrics "service").
+  custom_promql:
+    request_rate: 'boutique:http_requests:rate5m'
+    error_rate: 'boutique:http_errors:rate5m'
+    error_ratio: 'boutique:http_error_ratio:rate5m'
+    latency_p99: 'boutique:http_latency:p99'
+    latency_p95: 'boutique:http_latency:p95'
+    replicas_available: 'kube_deployment_status_replicas_available{namespace="default"}'
+    frontend_health: 'min(probe_success{job="blackbox-frontend"})'
+    span_error_rate: |
+      sum by (service_name) (
+        label_replace(
+          rate(traces_spanmetrics_calls_total{status_code="STATUS_CODE_ERROR"}[5m]),
+          "service_name", "$1", "service", "(.*)"
+        )
+      )
 
 advisor:
   confidence_threshold: 0.6
@@ -60,42 +79,37 @@ safety:
   max_affected_nodes: 2
   max_affected_pods_percent: 20
   max_services_per_suite: 3
-  blocked_namespaces: [kube-system, monitoring]
-  blocked_services: [database-master]
+  blocked_namespaces: [kube-system, observability-agents]
+  blocked_services: [redis-cart]
 
-# Real K8s inject (Lens-parity: kubeconfig → API server)
 inject:
   enabled: true
   kubeconfig: ~/.kube/config
-  # context: default
   default_namespace: default
   label_key: app
   dry_run: true
   chaos_backend: chaosmesh
-  client: auto   # native kubernetes client first; kubectl fallback
+  client: auto
   kubectl_timeout_s: 30
   delete_force_on_timeout: true
   prefer_self_expiring_chaos: true
   managed_by_label: chaosgen
   ephemeral_label: "true"
-  # SSH bastion — only if Windows cannot reach :6443 directly
   ssh_bastion:
     enabled: false
     auto_on_api_fail: true
-    # host: 192.168.31.220
-    # user: root
-    # identity_file: ~/.ssh/id_ed25519
+    host: 10.50.1.210
+    user: vagrant
     remote_api_host: 127.0.0.1
     remote_api_port: 6443
     skip_tls_verify: false
 
-# Gatekeeper (?? real ??) — frequency x severity matrix + strict log boost (P1)
 gatekeeper:
-  frequency_low_threshold: 0.5    # events/hour
+  frequency_low_threshold: 0.5
   frequency_high_threshold: 2.0
   severity_low_threshold: 0.4
   severity_high_threshold: 0.75
   log_correlation_boost: true
   strict_log_boost: true
-  severe_log_keywords: ["error", "fatal", "critical"]
-  ignore_log_keywords: ["warning", "warn", "deprecation", "info"]
+  severe_log_keywords: ["error", "fatal", "critical", "500", "unavailable"]
+  ignore_log_keywords: ["warning", "warn", "deprecation", "info", "debug"]

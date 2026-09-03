@@ -1,0 +1,86 @@
+{
+  "generated_at": "2026-08-29T04:47:40.733327+00:00",
+  "model_path": "H:\\Project\\AIO-Chaos-Tool\\models\\merged_canonical_before_live.joblib",
+  "runs_dir": "H:\\Project\\AIO-Chaos-Tool\\scratch\\telemetry\\runs",
+  "summary": {
+    "evaluable_runs": 2,
+    "excluded_runs": 0,
+    "aligned_runs": 1,
+    "alignment_rate": 0.5,
+    "fail_runs": 1,
+    "fail_with_spike": 1,
+    "fail_detection_rate": 1.0,
+    "pass_runs": 1,
+    "pass_without_spike": 0,
+    "pass_specificity": 0.0,
+    "partial_runs": 0,
+    "partial_with_spike": 0
+  },
+  "confusion_matrix": [
+    {
+      "verdict": "fail",
+      "if_spike": true,
+      "count": 1
+    },
+    {
+      "verdict": "pass",
+      "if_spike": true,
+      "count": 1
+    }
+  ],
+  "runs": [
+    {
+      "run_id": "ctk-journal-experiment-20260829T0429-20260829042926-3e5b3423fb",
+      "experiment_name": "flagship-multi-kill",
+      "verdict": "pass",
+      "ctk_status": "completed",
+      "aborted": false,
+      "dry_run": false,
+      "window_start": "2026-08-29T04:28:26.418924+00:00",
+      "window_end": "2026-08-29T04:30:27.100931+00:00",
+      "journal_path": "H:\\Project\\AIO-Chaos-Tool\\scratch\\ctk\\journals\\journal-experiment-20260829T042924Z.json",
+      "telemetry_cache_path": null,
+      "telemetry_series": 118,
+      "telemetry_samples": 1062,
+      "window_score": {
+        "feature_rows": 3,
+        "anomaly_count": 3,
+        "anomaly_fraction": 1.0,
+        "max_severity": "high",
+        "max_severity_score": 0.75,
+        "any_spike": true,
+        "mean_outlier_score": 0.1811,
+        "warnings": []
+      },
+      "alignment_outcome": "false_alarm",
+      "alignment_note": "PASS verdict but IF flagged spike"
+    },
+    {
+      "run_id": "ctk-journal-experiment-fail-redis-20-20260829044348-f1d458bc45",
+      "experiment_name": "fail-redis-cart",
+      "verdict": "fail",
+      "ctk_status": "completed",
+      "aborted": false,
+      "dry_run": false,
+      "window_start": "2026-08-29T04:42:48.250149+00:00",
+      "window_end": "2026-08-29T04:44:48.341851+00:00",
+      "journal_path": "H:\\Project\\AIO-Chaos-Tool\\scratch\\ctk\\journals\\journal-experiment-fail-redis-20260829T044345Z.json",
+      "telemetry_cache_path": null,
+      "telemetry_series": 118,
+      "telemetry_samples": 1062,
+      "window_score": {
+        "feature_rows": 3,
+        "anomaly_count": 3,
+        "anomaly_fraction": 1.0,
+        "max_severity": "medium",
+        "max_severity_score": 0.5,
+        "any_spike": true,
+        "mean_outlier_score": 0.1321,
+        "warnings": []
+      },
+      "alignment_outcome": "aligned",
+      "alignment_note": "FAIL verdict with IF spike in chaos window"
+    }
+  ],
+  "narrative": "Isolation Forest was trained on healthy baseline telemetry (unsupervised). Per-run chaos windows were scored without leaking verdict labels into fit(). On 2 evaluable runs, alignment rate was 50% (FAIL detection 100%, PASS specificity 0%)."
+}

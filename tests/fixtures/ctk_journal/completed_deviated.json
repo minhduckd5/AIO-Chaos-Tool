@@ -1,0 +1,15 @@
+{
+  "status": "completed",
+  "deviated": true,
+  "experiment": {
+    "title": "latency test",
+    "description": "steady state failed"
+  },
+  "run": [
+    {
+      "activity": {"type": "action", "name": "latency-frontend"},
+      "status": "succeeded"
+    }
+  ],
+  "steady_states": {}
+}

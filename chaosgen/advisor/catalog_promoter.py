@@ -3,8 +3,9 @@ Catalog promoter (P3 — Promote Known Catalog).
 
 Closes the Unknown -> Known loop: a HITL operator promotes a described,
 chaos-validated incident into the dynamic catalog. Promotion is gated — only a
-genuinely described scenario (not a P2 fallback) with an operator sign-off and
-syntactically valid acceptance criteria is written to disk.
+genuinely described scenario (not a P2 fallback) with an operator sign-off,
+``ExperimentVerdict.PASS``, and syntactically valid acceptance criteria is
+written to disk.
 
 Pipeline wiring (gatekeeper -> describer -> promote across CLI/GUI) belongs to
 P4; this module is the promote primitive plus the verify helpers.
@@ -23,8 +24,8 @@ from chaosgen.advisor.promoted_store import (
     get_default_store,
 )
 from chaosgen.advisor.scenario_catalog import CatalogEntry
-from chaosgen.config.scope import FOCUSED_ARCHITECTURE
-from chaosgen.schemas.faults import ChaosExperiment
+from chaosgen.config.connect_routing import architecture_from_settings
+from chaosgen.schemas.discovery import ArchitectureType
 from chaosgen.schemas.scenarios import (
     ExperimentVerdict,
     ScenarioKnowledgeState,
@@ -182,22 +183,30 @@ class CatalogPromoter:
         description: UnknownScenarioDescription,
         experiment: ChaosExperiment,
         approved_by: str,
+        *,
+        verdict: ExperimentVerdict,
         acceptance_criteria: Optional[Dict[str, Any]] = None,
         tags: Optional[List[str]] = None,
         name: Optional[str] = None,
         description_id: Optional[str] = None,
         description_row_id: Optional[int] = None,
+        architecture: ArchitectureType | None = None,
     ) -> CatalogEntry:
         """Validate guards, append to the store, and mark the scenario KNOWN.
 
         Raises PromoteError if any guard fails; nothing is written in that case.
+
+        ``verdict`` must be ``ExperimentVerdict.PASS`` (Option B: Expectation Verdict
+        gates knowledge promotion; FAIL/PARTIAL stay DESCRIBED).
         """
-        self._check_guards(description, approved_by, acceptance_criteria, name)
+        self._check_guards(description, approved_by, acceptance_criteria, name, verdict)
+
+        arch = architecture or self._resolve_promotion_architecture()
 
         record = PromotedCatalogRecord(
             name=name or description.title,
             description=description.root_cause_hypothesis,
-            architecture=FOCUSED_ARCHITECTURE,
+            architecture=arch,
             fault_type=description.suggested_fault_type,
             experiment_spec=experiment_to_dict(experiment),
             acceptance_criteria=acceptance_criteria,
@@ -219,10 +228,23 @@ class CatalogPromoter:
             except Exception as exc:
                 logger.warning("History mark_promoted failed (catalog saved): %s", exc)
         logger.info(
-            "Promoted scenario %r (incident=%s) by %s",
-            record.name, record.source_incident_id, record.approved_by,
+            "Promoted scenario %r (incident=%s) by %s after verdict=%s",
+            record.name,
+            record.source_incident_id,
+            record.approved_by,
+            verdict.value,
         )
         return record.to_catalog_entry()
+
+    @staticmethod
+    def _resolve_promotion_architecture() -> ArchitectureType:
+        """Form-first: promoted entries inherit architecture from settings.yaml."""
+        try:
+            from chaosgen.config.settings import load_settings
+
+            return architecture_from_settings(load_settings())
+        except Exception:
+            return ArchitectureType.MICROSERVICES
 
     def _check_guards(
         self,
@@ -230,7 +252,15 @@ class CatalogPromoter:
         approved_by: str,
         acceptance_criteria: Optional[Dict[str, Any]],
         name: Optional[str],
+        verdict: ExperimentVerdict,
     ) -> None:
+        # --- START MODIFICATION ---
+        # Option B: Expectation Verdict PASS is mandatory before KNOWN promotion
+        if verdict != ExperimentVerdict.PASS:
+            raise PromoteError(
+                f"can only promote after Expectation Verdict PASS, got {verdict.value}"
+            )
+        # --- END MODIFICATION ---
         if description.knowledge_state != ScenarioKnowledgeState.DESCRIBED:
             raise PromoteError(
                 f"can only promote DESCRIBED scenarios, got "

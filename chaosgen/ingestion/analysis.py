@@ -6,6 +6,7 @@ import os
 from typing import TYPE_CHECKING
 
 from chaosgen.ml.anomaly_detector import AnomalyDetector
+from chaosgen.ml.canonical_features import apply_canonical_features
 from chaosgen.ml.cluster_labels import ClusterLabelStore
 from chaosgen.ml.feature_engineering import FeatureEngineer
 from chaosgen.schemas.scenarios import AnomalyCluster, AnomalySummary
@@ -28,6 +29,8 @@ def analyze_dataset(
     feature_settings = settings.features if settings is not None else None
     fe = FeatureEngineer(settings=feature_settings)
     features = fe.transform(dataset)
+    if feature_settings is not None:
+        features = apply_canonical_features(features, feature_settings)
     if features.empty:
         return [], [], 0
 

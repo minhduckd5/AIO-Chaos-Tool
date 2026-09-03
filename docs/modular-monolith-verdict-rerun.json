@@ -1,0 +1,50 @@
+{
+  "claim": "After SIGKILL on the monolith-app container, HTTP health and blackbox probe success recover within 45 seconds (Docker restart policy always).",
+  "verdict": "pass",
+  "rationale": "After SIGKILL on the monolith-app container, HTTP health and blackbox probe success recover within 45 seconds (Docker restart policy always). \u2014 PASS. All 4 expectation check(s) held within the configured SLA window.",
+  "checks": [
+    {
+      "id": "monolith_http_alive",
+      "check_type": "http_health",
+      "passed": true,
+      "required": true,
+      "observed": null,
+      "threshold": null,
+      "op": null,
+      "message": "HTTP health http://127.0.0.1:18081/health returned success"
+    },
+    {
+      "id": "module_api_http_alive",
+      "check_type": "http_health",
+      "passed": true,
+      "required": false,
+      "observed": null,
+      "threshold": null,
+      "op": null,
+      "message": "HTTP health http://127.0.0.1:18082/health returned success"
+    },
+    {
+      "id": "monolith_probe_recovery",
+      "check_type": "prometheus_threshold",
+      "passed": true,
+      "required": true,
+      "observed": 1.0,
+      "threshold": 1.0,
+      "op": ">=",
+      "message": "Observed 1.0 >= 1.0 within 45s SLA window (query=probe_success{instance=\"http://monolith-app/health\"})"
+    },
+    {
+      "id": "module_api_still_probed",
+      "check_type": "prometheus_threshold",
+      "passed": true,
+      "required": false,
+      "observed": 1.0,
+      "threshold": 1.0,
+      "op": ">=",
+      "message": "Observed 1.0 >= 1.0 within 30s SLA window (query=probe_success{instance=\"http://module-api/health\"})"
+    }
+  ],
+  "experiment_name": "modular-monolith-kill-rerun",
+  "evaluated_at": "2026-09-01T17:28:46.715177+00:00",
+  "metadata": {}
+}
