@@ -1,5 +1,6 @@
 # Canonical signal-type pooling rules (v1).
 # Raw FeatureEngineer columns are matched by regex; pooled with max() per bucket+stat.
+# Pack aliases (pack__*) map into these buckets without bumping schema_version.
 
 schema_version: "1"
 
@@ -22,6 +23,7 @@ signals:
     - ram
     - working_set
     - MemAvailable
+    - memory_usage
   disk:
     - disk
     - io_
@@ -35,6 +37,8 @@ signals:
     - _tx_
     - receive_bytes
     - transmit_bytes
+    - network_rx
+    - network_tx
   latency:
     - latency
     - duration
@@ -42,31 +46,44 @@ signals:
     - p50
     - p95
     - p99
+    - latency_p95
+    - latency_p99
   errors:
     - error
     - 5xx
     - fail
     - exception
     - fault
+    - error_rate
+    - error_ratio
+    - span_error
   request_rate:
     - request
     - qps
     - throughput
     - http_server
     - rpc_server
+    - traffic_rate
+    - request_rate
   saturation:
     - throttl
     - saturation
     - cfs
+    - saturation_cpu
+    - saturation_cpu_mem
   availability:
     - "\\bup\\b"
     - ready
     - alive
+    - frontend_health
+    - replicas_available
 
 log_signals:
   log_volume:
     - log_volume
+    - pack__log_volume
   log_error_rate:
-    - error_rate
+    - log_error_rate
+    - pack__log_error_rate
 
 pooling: max

@@ -1,0 +1,20 @@
+# Bounded Loki ingest: LogQL *metric* queries only (no raw log-line NLP).
+# Promtail/K3s labels: namespace + app (Sprint A2).
+id: loki_system
+version: "1"
+service_label: app
+scope_vars:
+  - namespace
+signals:
+  log_error_rate:
+    source: loki
+    logql: |
+      sum by (app) (
+        rate({namespace="$namespace", app=~".+"} |~ "(?i)error|fatal|panic|critical" [1m])
+      )
+  log_volume:
+    source: loki
+    logql: |
+      sum by (app) (
+        rate({namespace="$namespace", app=~".+"}[1m])
+      )

@@ -1,0 +1,40 @@
+# Container runtime golden/saturation signals (cAdvisor / kubelet).
+# Identity label is pod; pack_loader normalizes to canonical "service".
+id: cadvisor
+version: "1"
+service_label: pod
+scope_vars:
+  - namespace
+signals:
+  cpu_usage:
+    source: prometheus
+    promql: |
+      sum(rate(container_cpu_usage_seconds_total{
+        namespace="$namespace",
+        container!="",
+        container!="POD"
+      }[5m])) by (pod)
+  memory_usage:
+    source: prometheus
+    promql: |
+      sum(container_memory_working_set_bytes{
+        namespace="$namespace",
+        container!="",
+        container!="POD"
+      }) by (pod)
+  saturation_cpu:
+    source: prometheus
+    promql: |
+      sum(rate(container_cpu_cfs_throttled_seconds_total{
+        namespace="$namespace",
+        container!="",
+        container!="POD"
+      }[5m])) by (pod)
+  network_rx_bytes:
+    source: prometheus
+    promql: |
+      sum(rate(container_network_receive_bytes_total{namespace="$namespace"}[5m])) by (pod)
+  network_tx_bytes:
+    source: prometheus
+    promql: |
+      sum(rate(container_network_transmit_bytes_total{namespace="$namespace"}[5m])) by (pod)

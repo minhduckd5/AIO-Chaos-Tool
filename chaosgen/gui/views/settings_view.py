@@ -113,6 +113,18 @@ class SettingsView(QWidget):
         self._loki_url = QLineEdit(DEFAULT_LOKI_URL)
         telem_form.addRow("Prometheus URL:", self._prom_url)
         telem_form.addRow("Loki URL:", self._loki_url)
+
+        # MODIFIED: form-first telemetry packs (no live discovery)
+        self._telem_pack_combo = QComboBox()
+        self._telem_pack_combo.addItem("boutique", "boutique")
+        self._telem_pack_combo.addItem("boutique + cadvisor", "boutique+cadvisor")
+        self._telem_pack_combo.addItem(
+            "boutique + cadvisor + loki", "boutique+cadvisor+loki"
+        )
+        telem_form.addRow("Telemetry pack:", self._telem_pack_combo)
+        self._telem_namespace = QLineEdit("default")
+        self._telem_namespace.setPlaceholderText("Kubernetes namespace scope")
+        telem_form.addRow("Pack namespace:", self._telem_namespace)
         root.addWidget(telem_group)
 
         # --- Architecture profile ---
@@ -394,6 +406,21 @@ class SettingsView(QWidget):
             if conn.toxiproxy.api_url:
                 self._toxiproxy_url.setText(conn.toxiproxy.api_url)
 
+            # MODIFIED: telemetry pack profile
+            extras = list(settings.ingest.extra_packs or [])
+            if "cadvisor" in extras and "loki_system" in extras:
+                pack_key = "boutique+cadvisor+loki"
+            elif "cadvisor" in extras:
+                pack_key = "boutique+cadvisor"
+            else:
+                pack_key = settings.ingest.telemetry_profile or "boutique"
+            pidx = self._telem_pack_combo.findData(pack_key)
+            if pidx < 0:
+                pidx = self._telem_pack_combo.findData("boutique")
+            if pidx >= 0:
+                self._telem_pack_combo.setCurrentIndex(pidx)
+            self._telem_namespace.setText(settings.ingest.scope_namespace or "default")
+
             self._developer_mode_cb.setChecked(settings.developer_mode)
             self._update_tier_badge()
 
@@ -449,6 +476,23 @@ class SettingsView(QWidget):
             ))
         settings.hints.observability = obs
         settings.developer_mode = self._developer_mode_cb.isChecked()
+
+        # MODIFIED: persist telemetry pack selection
+        pack_key = self._telem_pack_combo.currentData() or "boutique"
+        if pack_key == "boutique+cadvisor+loki":
+            settings.ingest.telemetry_profile = "boutique"
+            settings.ingest.extra_packs = ["cadvisor", "loki_system"]
+        elif pack_key == "boutique+cadvisor":
+            settings.ingest.telemetry_profile = "boutique"
+            settings.ingest.extra_packs = ["cadvisor"]
+        else:
+            settings.ingest.telemetry_profile = "boutique"
+            settings.ingest.extra_packs = []
+        settings.ingest.scope_namespace = (
+            self._telem_namespace.text().strip()
+            or settings.connect.kubernetes.default_namespace
+            or "default"
+        )
 
     def _check_permissions(self) -> None:
         if os.name == "nt" or not SECRETS_FILE.exists():

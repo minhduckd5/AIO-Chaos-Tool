@@ -121,6 +121,52 @@ class PrometheusClient:
             all_series.extend(series)
         return all_series
 
+    # --- START MODIFICATION ---
+    # Guided discovery probes (Custom mode)
+    def label_values(
+        self, label: str, *, timeout: float | None = None
+    ) -> tuple[list[str], str | None]:
+        """
+        GET /api/v1/label/{label}/values
+
+        Returns (values, error_reason). On failure values is [] and reason is set.
+        """
+        wait = timeout if timeout is not None else min(10.0, float(self.timeout))
+        try:
+            resp = requests.get(
+                f"{self.base_url}/api/v1/label/{label}/values",
+                headers=self._headers(),
+                timeout=wait,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("status") != "success":
+                reason = str(data.get("error") or "label values failed")
+                return [], reason
+            values = [str(v) for v in (data.get("data") or []) if v is not None]
+            return values, None
+        except requests.RequestException as exc:
+            return [], f"unreachable ({exc})"
+
+    def metric_names(
+        self, *, max_names: int = 5000, timeout: float | None = None
+    ) -> tuple[list[str], str | None]:
+        """List metric names via label __name__ (capped for UI safety)."""
+        values, err = self.label_values("__name__", timeout=timeout)
+        if err:
+            return [], err
+        if len(values) > max_names:
+            logger.warning(
+                "Prometheus returned %d metric names; capping to %d for guided discovery",
+                len(values),
+                max_names,
+            )
+            values = sorted(values)[:max_names]
+        else:
+            values = sorted(values)
+        return values, None
+    # --- END MODIFICATION ---
+
     def health_check(self) -> bool:
         """Verify Prometheus is reachable."""
         ok, _ = self.probe()

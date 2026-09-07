@@ -14,6 +14,7 @@
    - **P1 catalog + dry-run:** `event_driven`, `monolith`, `client_server`, `serverless` — form load, catalog filter, and `inject.dry_run=true` generate path only.
 5. **Observability probe** still runs when `hints.observability` is configured (automated reachability check); architecture topology is **not** inferred heuristically.
 6. **Heuristic auto-discovery** (`ArchitectureClassifier`, `run_full_discovery`) is **deferred**, not removed — re-enable via `DISCOVERY_ENABLED=True` when corpus and lab coverage justify it.
+7. **Telemetry Guided Custom Discovery (Beta)** may probe Prom/Loki label APIs for **signal selection only** (see [adr-telemetry-packs-form-first.md](adr-telemetry-packs-form-first.md)). That path does **not** reopen architecture/topology auto-classification; this ADR’s form-first boundary still holds.
 
 ## Rationale
 
@@ -61,3 +62,4 @@ ChaosGen surfaced an **infrastructure blind spot**: `docker kill --signal SIGKIL
 - Presets: `chaosgen/config/profile_presets.py`
 - Resolver: `chaosgen/discovery/__init__.py` → `resolve_discovery_report()`
 - Validation: `chaosgen/config/profile_validation.py`
+- Related telemetry ADR: `docs/adr-telemetry-packs-form-first.md` (Default packs + Custom guided signals)

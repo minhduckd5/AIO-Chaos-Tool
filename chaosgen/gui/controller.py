@@ -59,6 +59,8 @@ class AppController(QObject):
     telemetry_check_finished = Signal(dict)
     telemetry_progress = Signal(str)
     llm_check_finished = Signal(bool, str)
+    # MODIFIED: Guided Custom Discovery prefetch result dict
+    guided_catalog_finished = Signal(object)
 
     # Status refresh
     status_refreshed = Signal(dict)
@@ -188,6 +190,23 @@ class AppController(QObject):
         worker = AsyncWorker(check_telemetry_endpoints, prom_url, loki_url)
         worker.signals.finished.connect(self.telemetry_check_finished.emit)
         worker.signals.error.connect(self.advisor_error.emit)
+        self._spawn(worker)
+
+    def prefetch_guided_catalog_async(
+        self, prom_url: str, loki_url: str, namespace: str = "default"
+    ):
+        """Warm GuidedCatalog cache after Ping OK (session only)."""
+        from chaosgen.gui.analysis_pipeline import probe_guided_catalog_endpoints
+
+        worker = AsyncWorker(
+            probe_guided_catalog_endpoints, prom_url, loki_url, namespace
+        )
+        worker.signals.finished.connect(self.guided_catalog_finished.emit)
+        worker.signals.error.connect(
+            lambda err: self.guided_catalog_finished.emit(
+                {"ok": False, "error": err, "namespace": namespace}
+            )
+        )
         self._spawn(worker)
 
     def test_llm_async(self, provider: str, model: str | None):

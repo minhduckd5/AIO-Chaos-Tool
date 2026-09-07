@@ -4,6 +4,8 @@ Telemetry & AI Advisor — live stack, offline export, anomaly review, scenario 
 
 from __future__ import annotations
 
+import logging
+from dataclasses import asdict
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Slot, QTimer, QSettings
@@ -14,7 +16,8 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QTextEdit,
     QSplitter, QMessageBox, QFileDialog, QRadioButton,
     QButtonGroup, QCheckBox, QComboBox, QTabWidget, QSizePolicy,
-    QDialog, QDialogButtonBox, QPlainTextEdit, QScrollArea,
+    QDialog, QDialogButtonBox, QPlainTextEdit, QScrollArea, QFrame,
+    QTreeWidget, QTreeWidgetItem,
 )
 
 from chaosgen.config.telemetry_endpoints import DEFAULT_LOKI_URL, DEFAULT_PROMETHEUS_URL
@@ -32,6 +35,9 @@ from chaosgen.schemas.scenarios import (
     ScenarioKnowledgeState,
     UnknownScenarioDescription,
 )
+from chaosgen.telemetry.guided_discovery import DiscoveredQuery, GuidedCatalog
+
+logger = logging.getLogger(__name__)
 
 _VERDICT_COLORS = {
     "REAL": Colors.SUCCESS,
@@ -49,6 +55,18 @@ _DEFAULT_EXPORT = Path(r"H:\Project\microservices-demo-1\local\observability-fet
 _COMPOSITE_WIDTH_BREAKPOINT = 1100
 _SETTINGS_ORG = "ChaosGen"
 _SETTINGS_APP = "AdvisorView"
+
+# Default (Enterprise Packs) — static form-first stack for Step 1 Default mode
+_ENTERPRISE_PROFILE = "boutique"
+_ENTERPRISE_EXTRAS = ["cadvisor", "loki_system"]
+_BUCKET_ORDER = ("traffic", "errors", "latency", "saturation", "logs")
+_BUCKET_LABELS = {
+    "traffic": "Traffic",
+    "errors": "Errors",
+    "latency": "Latency",
+    "saturation": "Saturation",
+    "logs": "Logs",
+}
 
 
 def _shorten_feature(name: str, max_len: int = 42) -> str:
@@ -74,6 +92,16 @@ class AdvisorView(QWidget):
         self._resize_layout_timer.setSingleShot(True)
         self._resize_layout_timer.setInterval(120)
         self._resize_layout_timer.timeout.connect(self._apply_composite_layout)
+        # --- START MODIFICATION ---
+        # Guided Custom Discovery session cache (Ping prefetch; never written to disk)
+        self._guided_catalog: GuidedCatalog | None = None
+        self._guided_prefetch_pending = False
+        self._guided_prefetch_error: str | None = None
+        self._guided_prefetch_gen = 0
+        self._guided_prefetch_waiting_gen: int | None = None
+        self._telemetry_connected = False
+        self._resolved_scope_ns = "default"
+        # --- END MODIFICATION ---
         self._init_ui()
         self._connect_signals()
         self._load_defaults()
@@ -177,6 +205,79 @@ class AdvisorView(QWidget):
         live_form.addRow("Lookback:", self._relative_widget)
         live_form.addRow("Date Range:", self._absolute_widget)
 
+        # --- START MODIFICATION ---
+        # Guided Custom Discovery: Default | Custom replaces pack combo + Target namespace
+        ingest_mode_row = QHBoxLayout()
+        self._ingest_mode_combo = QComboBox()
+        self._ingest_mode_combo.addItem("Default (Enterprise Packs)", "default")
+        self._ingest_mode_combo.addItem("Custom (Guided Discovery)", "custom")
+        self._ingest_mode_combo.setEnabled(False)
+        self._style_input(self._ingest_mode_combo)
+        self._ingest_beta_badge = QLabel("Beta / Experimental")
+        self._ingest_beta_badge.setStyleSheet(
+            f"color: {Colors.WARNING}; font-size: {Fonts.SIZE_SMALL}px; "
+            f"border: 1px solid {Colors.WARNING}; border-radius: 4px; padding: 2px 6px;"
+        )
+        self._ingest_beta_badge.setVisible(False)
+        ingest_mode_row.addWidget(self._ingest_mode_combo)
+        ingest_mode_row.addWidget(self._ingest_beta_badge)
+        ingest_mode_row.addStretch()
+        live_form.addRow("Ingest mode:", ingest_mode_row)
+
+        self._custom_panel = QWidget()
+        custom_l = QVBoxLayout(self._custom_panel)
+        custom_l.setContentsMargins(0, 4, 0, 0)
+        custom_l.setSpacing(6)
+
+        self._custom_status_label = QLabel("")
+        self._custom_status_label.setWordWrap(True)
+        self._custom_status_label.setStyleSheet(
+            f"color: {Colors.TEXT_SECONDARY}; font-size: {Fonts.SIZE_SMALL}px;"
+        )
+        custom_l.addWidget(self._custom_status_label)
+
+        toolbar = QHBoxLayout()
+        self._btn_suggested = QPushButton("Suggested")
+        self._btn_select_all = QPushButton("Select all")
+        self._btn_deselect_all = QPushButton("Deselect all")
+        for b in (self._btn_suggested, self._btn_select_all, self._btn_deselect_all):
+            b.setEnabled(False)
+            toolbar.addWidget(b)
+        toolbar.addStretch()
+        custom_l.addLayout(toolbar)
+
+        self._guided_tree = QTreeWidget()
+        self._guided_tree.setHeaderLabels(["Signal", "Query preview"])
+        self._guided_tree.setColumnCount(2)
+        self._guided_tree.setRootIsDecorated(True)
+        self._guided_tree.setUniformRowHeights(True)
+        self._guided_tree.setMinimumHeight(180)
+        self._guided_tree.setMaximumHeight(320)
+        self._guided_tree.setStyleSheet(
+            f"QTreeWidget {{ background-color: {Colors.BG_INPUT}; color: {Colors.TEXT_PRIMARY}; "
+            f"border: 1px solid {Colors.BORDER}; border-radius: 4px; }}"
+        )
+        self._guided_tree.header().setStretchLastSection(True)
+        self._guided_tree.header().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        custom_l.addWidget(self._guided_tree)
+
+        self._custom_zero_hint = QLabel("Select at least one metric to proceed")
+        self._custom_zero_hint.setStyleSheet(
+            f"color: {Colors.DANGER}; font-size: {Fonts.SIZE_SMALL}px;"
+        )
+        self._custom_zero_hint.setVisible(False)
+        custom_l.addWidget(self._custom_zero_hint)
+
+        self._custom_panel.setVisible(False)
+        live_form.addRow("", self._custom_panel)
+
+        self._ingest_mode_combo.currentIndexChanged.connect(self._on_ingest_mode_changed)
+        self._btn_suggested.clicked.connect(self._on_guided_suggested)
+        self._btn_select_all.clicked.connect(lambda: self._set_all_guided_checks(True))
+        self._btn_deselect_all.clicked.connect(lambda: self._set_all_guided_checks(False))
+        self._guided_tree.itemChanged.connect(self._on_guided_item_changed)
+        # --- END MODIFICATION ---
+
         self._time_relative.toggled.connect(lambda rel: self._relative_widget.setVisible(rel))
         self._time_relative.toggled.connect(lambda rel: self._absolute_widget.setVisible(not rel))
 
@@ -204,6 +305,7 @@ class AdvisorView(QWidget):
 
         source_layout.addWidget(self._source_stack)
         self._mode_live.toggled.connect(lambda on: self._source_stack.setCurrentIndex(0 if on else 1))
+        self._mode_live.toggled.connect(lambda _on: self._refresh_analyze_guard())
         s1.addWidget(source_card)
 
         llm_card = self._make_card("Analysis options")
@@ -361,6 +463,25 @@ class AdvisorView(QWidget):
         llm_test_row.addWidget(self._llm_test_status, stretch=1)
         llm_form.addRow("", llm_test_row)
         s1.addWidget(llm_card)
+
+        # --- START MODIFICATION ---
+        # P0: status strip above Run analysis
+        self._ingest_scope_frame = QFrame()
+        self._ingest_scope_frame.setObjectName("ingestScopeStrip")
+        self._ingest_scope_frame.setStyleSheet(
+            f"#ingestScopeStrip {{ background-color: {Colors.BG_CARD}; "
+            f"border: 1px solid {Colors.BORDER}; border-radius: 6px; }}"
+        )
+        strip_l = QVBoxLayout(self._ingest_scope_frame)
+        strip_l.setContentsMargins(12, 8, 12, 8)
+        self._ingest_status_label = QLabel("")
+        self._ingest_status_label.setWordWrap(True)
+        self._ingest_status_label.setStyleSheet(
+            f"color: {Colors.TEXT_SECONDARY}; font-size: {Fonts.SIZE_SMALL}px;"
+        )
+        strip_l.addWidget(self._ingest_status_label)
+        s1.addWidget(self._ingest_scope_frame)
+        # --- END MODIFICATION ---
 
         self._analyze_btn = QPushButton("Run analysis")
         self._analyze_btn.setStyleSheet(
@@ -590,6 +711,7 @@ class AdvisorView(QWidget):
         self._controller.advisor_error.connect(self._on_advisor_error)
         self._controller.telemetry_check_finished.connect(self._on_check_finished)
         self._controller.telemetry_progress.connect(self._on_progress)
+        self._controller.guided_catalog_finished.connect(self._on_guided_catalog_finished)
         self._anomaly_table.currentCellChanged.connect(self._on_anomaly_selected)
         self._provider_combo.currentTextChanged.connect(self._refresh_credential_status)
         self._controller.llm_check_finished.connect(self._on_llm_test_finished)
@@ -636,6 +758,206 @@ class AdvisorView(QWidget):
     def refresh_credentials(self):
         """Called after Settings save so credential status picks up new keys."""
         self._refresh_credential_status()
+        # MODIFIED: refresh resolved namespace strip after Settings save
+        self._sync_ingest_controls_from_settings()
+
+    def _resolved_namespace(self) -> str:
+        from chaosgen.config.settings import load_settings
+        from chaosgen.telemetry.guided_discovery import resolve_scope_namespace
+
+        try:
+            return resolve_scope_namespace(load_settings())
+        except Exception:
+            return self._resolved_scope_ns or "default"
+
+    def _ingest_mode(self) -> str:
+        data = self._ingest_mode_combo.currentData()
+        return str(data or "default")
+
+    def _update_ingest_status_strip(self) -> None:
+        from chaosgen.telemetry.pack_loader import format_pack_status_line
+
+        ns = self._resolved_scope_ns or self._resolved_namespace()
+        if self._ingest_mode() == "custom":
+            n = len(self._selected_guided_queries())
+            pending = " · discovering…" if self._guided_prefetch_pending else ""
+            err = (
+                f" · prefetch error: {self._guided_prefetch_error}"
+                if self._guided_prefetch_error
+                else ""
+            )
+            self._ingest_status_label.setText(
+                f"Mode: Custom (Guided Discovery Beta) — {n} selected · ns={ns}{pending}{err}"
+            )
+        else:
+            base = format_pack_status_line(
+                _ENTERPRISE_PROFILE, list(_ENTERPRISE_EXTRAS), ns
+            )
+            self._ingest_status_label.setText(f"Mode: Default · {base}")
+
+    def _sync_ingest_controls_from_settings(self) -> None:
+        """Refresh read-only namespace resolution from settings (no Step 1 editor)."""
+        self._resolved_scope_ns = self._resolved_namespace()
+        self._update_ingest_status_strip()
+        self._refresh_analyze_guard()
+
+    def _on_ingest_mode_changed(self) -> None:
+        is_custom = self._ingest_mode() == "custom"
+        self._custom_panel.setVisible(is_custom)
+        self._ingest_beta_badge.setVisible(is_custom)
+        if is_custom:
+            self._render_guided_panel()
+        self._update_ingest_status_strip()
+        self._refresh_analyze_guard()
+
+    def _render_guided_panel(self) -> None:
+        """Refresh Custom checklist from prefetch cache / in-flight / error state."""
+        if self._guided_prefetch_pending and self._guided_catalog is None:
+            self._custom_status_label.setText("Discovering live signals…")
+            self._custom_status_label.setStyleSheet(
+                f"color: {Colors.TEXT_SECONDARY}; font-size: {Fonts.SIZE_SMALL}px;"
+            )
+            self._guided_tree.clear()
+            self._set_guided_toolbar_enabled(False)
+            return
+
+        if self._guided_prefetch_error and self._guided_catalog is None:
+            self._custom_status_label.setText(
+                f"Discovery failed: {self._guided_prefetch_error}. "
+                "Default mode remains available."
+            )
+            self._custom_status_label.setStyleSheet(
+                f"color: {Colors.WARNING}; font-size: {Fonts.SIZE_SMALL}px;"
+            )
+            self._guided_tree.clear()
+            self._set_guided_toolbar_enabled(False)
+            return
+
+        if self._guided_catalog is None:
+            self._custom_status_label.setText(
+                "Check connection to discover live signals for Custom mode."
+            )
+            self._custom_status_label.setStyleSheet(
+                f"color: {Colors.TEXT_SECONDARY}; font-size: {Fonts.SIZE_SMALL}px;"
+            )
+            self._guided_tree.clear()
+            self._set_guided_toolbar_enabled(False)
+            return
+
+        warnings = list(self._guided_catalog.warnings or [])
+        stack = self._guided_catalog.stack_summary or "live"
+        n = len(self._guided_catalog.queries)
+        sug = len(self._guided_catalog.suggested)
+        msg = f"Discovered {n} candidates ({stack}) · {sug} suggested"
+        if warnings:
+            msg += " · " + "; ".join(warnings[:2])
+        self._custom_status_label.setText(msg)
+        self._custom_status_label.setStyleSheet(
+            f"color: {Colors.TEXT_SECONDARY}; font-size: {Fonts.SIZE_SMALL}px;"
+        )
+        self._populate_guided_tree(self._guided_catalog)
+        self._set_guided_toolbar_enabled(True)
+        # Default action UX: apply Suggested once when first populated empty
+        if not self._any_guided_checked():
+            self._on_guided_suggested()
+
+    def _set_guided_toolbar_enabled(self, enabled: bool) -> None:
+        for b in (self._btn_suggested, self._btn_select_all, self._btn_deselect_all):
+            b.setEnabled(enabled)
+
+    def _populate_guided_tree(self, catalog: GuidedCatalog) -> None:
+        self._guided_tree.blockSignals(True)
+        self._guided_tree.clear()
+        by_bucket: dict[str, list[DiscoveredQuery]] = {b: [] for b in _BUCKET_ORDER}
+        for q in catalog.queries:
+            by_bucket.setdefault(q.bucket, []).append(q)
+
+        for bucket in _BUCKET_ORDER:
+            items = by_bucket.get(bucket) or []
+            if not items:
+                continue
+            parent = QTreeWidgetItem(
+                [f"{_BUCKET_LABELS.get(bucket, bucket)} ({len(items)})", ""]
+            )
+            parent.setFlags(parent.flags() & ~Qt.ItemIsUserCheckable)
+            parent.setExpanded(True)
+            self._guided_tree.addTopLevelItem(parent)
+            for dq in items:
+                preview = dq.query if len(dq.query) <= 72 else dq.query[:71] + "…"
+                label = dq.metric
+                if dq.suggested:
+                    label = f"{dq.metric}  ★ Suggested"
+                child = QTreeWidgetItem([label, preview])
+                child.setFlags(
+                    child.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled
+                )
+                child.setCheckState(0, Qt.Unchecked)
+                child.setData(0, Qt.UserRole, dq)
+                child.setToolTip(0, dq.query)
+                child.setToolTip(1, dq.query)
+                parent.addChild(child)
+        self._guided_tree.blockSignals(False)
+
+    def _iter_guided_leaf_items(self):
+        root = self._guided_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            parent = root.child(i)
+            for j in range(parent.childCount()):
+                yield parent.child(j)
+
+    def _any_guided_checked(self) -> bool:
+        return any(
+            item.checkState(0) == Qt.Checked for item in self._iter_guided_leaf_items()
+        )
+
+    def _selected_guided_queries(self) -> list[DiscoveredQuery]:
+        out: list[DiscoveredQuery] = []
+        for item in self._iter_guided_leaf_items():
+            if item.checkState(0) != Qt.Checked:
+                continue
+            dq = item.data(0, Qt.UserRole)
+            if isinstance(dq, DiscoveredQuery):
+                out.append(dq)
+        return out
+
+    def _set_all_guided_checks(self, checked: bool) -> None:
+        state = Qt.Checked if checked else Qt.Unchecked
+        self._guided_tree.blockSignals(True)
+        for item in self._iter_guided_leaf_items():
+            item.setCheckState(0, state)
+        self._guided_tree.blockSignals(False)
+        self._refresh_analyze_guard()
+        self._update_ingest_status_strip()
+
+    def _on_guided_suggested(self) -> None:
+        self._guided_tree.blockSignals(True)
+        for item in self._iter_guided_leaf_items():
+            dq = item.data(0, Qt.UserRole)
+            want = isinstance(dq, DiscoveredQuery) and dq.suggested
+            item.setCheckState(0, Qt.Checked if want else Qt.Unchecked)
+        self._guided_tree.blockSignals(False)
+        self._refresh_analyze_guard()
+        self._update_ingest_status_strip()
+
+    def _on_guided_item_changed(self, _item, _column) -> None:
+        self._refresh_analyze_guard()
+        self._update_ingest_status_strip()
+
+    def _refresh_analyze_guard(self) -> None:
+        """Zero-selection guard for Custom mode; Default always runnable."""
+        if not hasattr(self, "_analyze_btn"):
+            return
+        live = self._mode_live.isChecked()
+        custom = live and self._ingest_mode() == "custom"
+        ok = True
+        if custom:
+            ok = len(self._selected_guided_queries()) > 0
+            self._custom_zero_hint.setVisible(not ok)
+        else:
+            self._custom_zero_hint.setVisible(False)
+        # Keep disabled while analysis is running (stack index 1)
+        analyzing = self._stack.currentIndex() == 1
+        self._analyze_btn.setEnabled(ok and not analyzing)
 
     def _refresh_ml_models(self):
         self._ml_model_combo.clear()
@@ -702,6 +1024,8 @@ class AdvisorView(QWidget):
         except Exception:
             pass
         self._refresh_credential_status()
+        # MODIFIED: P0 — seed pack/namespace after widgets exist
+        self._sync_ingest_controls_from_settings()
 
     def _on_browse_export(self):
         path = QFileDialog.getExistingDirectory(self, "Select export bundle or exports folder")
@@ -711,6 +1035,12 @@ class AdvisorView(QWidget):
     def _on_check_connection(self):
         self._check_status.setText("Checking…")
         self._check_btn.setEnabled(False)
+        # Invalidate prior guided cache until Ping succeeds
+        self._guided_prefetch_gen += 1
+        self._guided_prefetch_waiting_gen = None
+        self._guided_catalog = None
+        self._guided_prefetch_error = None
+        self._guided_prefetch_pending = False
         self._controller.check_telemetry_async(
             self._prom_url.text().strip(),
             self._loki_url.text().strip(),
@@ -724,6 +1054,58 @@ class AdvisorView(QWidget):
         all_ok = all(not str(msg).startswith("FAIL") for msg in health.values())
         color = Colors.SUCCESS if all_ok else Colors.WARNING
         self._check_status.setStyleSheet(f"color: {color};")
+
+        self._telemetry_connected = all_ok
+        self._ingest_mode_combo.setEnabled(all_ok)
+        if not all_ok:
+            # Keep Default usable; Custom needs a healthy stack for discovery
+            self._ingest_mode_combo.blockSignals(True)
+            self._ingest_mode_combo.setCurrentIndex(0)
+            self._ingest_mode_combo.blockSignals(False)
+            self._custom_panel.setVisible(False)
+            self._ingest_beta_badge.setVisible(False)
+            self._update_ingest_status_strip()
+            self._refresh_analyze_guard()
+            return
+
+        # Prefetch guided catalog in background (warm Custom panel)
+        self._resolved_scope_ns = self._resolved_namespace()
+        self._guided_prefetch_pending = True
+        self._guided_prefetch_error = None
+        self._guided_prefetch_gen += 1
+        gen = self._guided_prefetch_gen
+        self._guided_prefetch_waiting_gen = gen
+        if self._ingest_mode() == "custom":
+            self._render_guided_panel()
+        self._update_ingest_status_strip()
+        self._controller.prefetch_guided_catalog_async(
+            self._prom_url.text().strip(),
+            self._loki_url.text().strip(),
+            self._resolved_scope_ns,
+        )
+
+    @Slot(object)
+    def _on_guided_catalog_finished(self, payload):
+        waiting = self._guided_prefetch_waiting_gen
+        if waiting is not None and waiting != self._guided_prefetch_gen:
+            return
+        self._guided_prefetch_pending = False
+        if not isinstance(payload, dict):
+            self._guided_prefetch_error = "Unexpected discovery payload"
+            self._guided_catalog = None
+        elif not payload.get("ok"):
+            self._guided_prefetch_error = str(payload.get("error") or "discovery failed")
+            self._guided_catalog = None
+        else:
+            self._guided_prefetch_error = None
+            catalog = payload.get("catalog")
+            self._guided_catalog = catalog if isinstance(catalog, GuidedCatalog) else None
+            if self._guided_catalog is None:
+                self._guided_prefetch_error = "Empty discovery catalog"
+        if self._ingest_mode() == "custom":
+            self._render_guided_panel()
+        self._update_ingest_status_strip()
+        self._refresh_analyze_guard()
 
     def _on_test_llm(self):
         self._test_llm_btn.setEnabled(False)
@@ -796,10 +1178,24 @@ class AdvisorView(QWidget):
             settings.safety.blocked_namespaces = [
                 ns.strip() for ns in self._blocked_namespaces.text().split(",") if ns.strip()
             ]
-
+            # MODIFIED: do not persist Guided Custom ticks / ingest mode to disk
             save_settings(settings)
         except Exception as e:
             logger.warning("Failed to save tuning settings before analysis: %s", e)
+
+        ns = self._resolved_namespace()
+        ingest_mode = self._ingest_mode() if source == "live" else "default"
+        custom_queries = None
+        if ingest_mode == "custom":
+            selected = self._selected_guided_queries()
+            if not selected:
+                QMessageBox.warning(
+                    self,
+                    "No metrics selected",
+                    "Select at least one metric to proceed.",
+                )
+                return
+            custom_queries = [asdict(q) for q in selected]
 
         request = AnalysisRequest(
             source=source,
@@ -816,6 +1212,11 @@ class AdvisorView(QWidget):
             llm_model=self._model.text().strip() or None,
             skip_gatekeeper=self._skip_gatekeeper_cb.isChecked(),
             model_path=model_path,
+            telemetry_profile=_ENTERPRISE_PROFILE,
+            extra_packs=list(_ENTERPRISE_EXTRAS),
+            scope_namespace=ns,
+            ingest_mode=ingest_mode,  # type: ignore[arg-type]
+            custom_queries=custom_queries,
         )
 
         self._analyze_btn.setEnabled(False)
@@ -833,11 +1234,11 @@ class AdvisorView(QWidget):
 
         self._current_result = result
         self._current_report = report
-        self._analyze_btn.setEnabled(True)
         self._check_btn.setEnabled(True)
         self._dev_options_toggle.setEnabled(True)
         self._dev_options_container.setEnabled(True)
         self._stack.setCurrentIndex(2)
+        self._refresh_analyze_guard()
         self._step_label.setText("Step 3 of 3 — Review results")
 
         if result:
@@ -1148,11 +1549,11 @@ class AdvisorView(QWidget):
 
     @Slot(str)
     def _on_advisor_error(self, error_msg: str):
-        self._analyze_btn.setEnabled(True)
         self._check_btn.setEnabled(True)
         self._dev_options_toggle.setEnabled(True)
         self._dev_options_container.setEnabled(True)
         self._go_step1()
+        self._refresh_analyze_guard()
         QMessageBox.critical(self, "Analysis error", error_msg)
 
     def _on_anomaly_selected(self, row, _col, _prev_row, _prev_col):

@@ -401,12 +401,19 @@ class AnomalyDetector:
         feature_names: List[str],
     ) -> List[AnomalyCluster]:
         clusters: List[AnomalyCluster] = []
+        # MODIFIED: positional take — boolean Index.__getitem__ can yield empty on DTIndex
+        index_values = np.asarray(anomaly_indices)
 
-        for cid in range(int(cluster_labels.max()) + 1):
-            mask = cluster_labels == cid
+        for cid in sorted({int(x) for x in cluster_labels}):
+            mask = np.asarray(cluster_labels == cid)
+            if not np.any(mask):
+                continue
             cluster_features = anomaly_features[mask]
             cluster_scores = anomaly_scores[mask]
-            cluster_timestamps = anomaly_indices[mask]
+            cluster_timestamps = index_values[mask]
+            if cluster_timestamps.size == 0:
+                logger.warning("Cluster %d has empty timestamps; skipping", cid)
+                continue
 
             mean_score = float(np.mean(cluster_scores))
             severity = self._score_to_severity(mean_score)
@@ -417,11 +424,19 @@ class AnomalyDetector:
 
             affected = self._extract_service_names(dominant)
 
-            ts_list = [float(t.timestamp()) for t in cluster_timestamps] if hasattr(
-                cluster_timestamps[0], "timestamp"
-            ) else cluster_timestamps.tolist()
+            first = cluster_timestamps[0]
+            if hasattr(first, "timestamp"):
+                ts_list = [float(t.timestamp()) for t in cluster_timestamps]
+            elif isinstance(first, (np.datetime64, pd.Timestamp)):
+                ts_list = [
+                    float(pd.Timestamp(t).timestamp()) for t in cluster_timestamps
+                ]
+            else:
+                ts_list = [float(t) for t in cluster_timestamps]
 
-            centroid = self.kmeans.cluster_centers_[cid].tolist() if self.kmeans else None
+            centroid = (
+                self.kmeans.cluster_centers_[cid].tolist() if self.kmeans else None
+            )
 
             clusters.append(AnomalyCluster(
                 cluster_id=cid,

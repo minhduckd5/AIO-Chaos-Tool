@@ -9,7 +9,7 @@ from __future__ import annotations
 # --- END MODIFICATION ---
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from chaosgen.advisor.context_builder import ContextBuilder
 from chaosgen.advisor.pipeline import run_advisor_pipeline
@@ -29,6 +29,11 @@ from chaosgen.ml.anomaly_detector import AnomalyDetector
 from chaosgen.ml.canonical_features import apply_canonical_features
 from chaosgen.ml.cluster_labels import ClusterLabelStore
 from chaosgen.schemas.scenarios import AdvisorReport, AnomalyCluster, AnomalySummary
+from chaosgen.telemetry.guided_discovery import (
+    discovered_from_dicts,
+    discovered_to_pack_queries,
+    resolve_scope_namespace,
+)
 
 
 @dataclass
@@ -48,6 +53,15 @@ class AnalysisRequest:
     config_path: str | None = None
     skip_gatekeeper: bool = False
     model_path: str | None = None
+    # --- START MODIFICATION ---
+    # P0: Telemetry tab session override (not written to disk)
+    telemetry_profile: str | None = None
+    extra_packs: list[str] | None = None
+    scope_namespace: str | None = None
+    # Guided Custom: session ticks only (no ~/.config write)
+    ingest_mode: Literal["default", "custom"] = "default"
+    custom_queries: list[dict[str, Any]] | None = None
+    # --- END MODIFICATION ---
 
 
 @dataclass
@@ -70,6 +84,34 @@ class AnalysisResult:
 
 def check_telemetry_endpoints(prom_url: str, loki_url: str) -> dict[str, str]:
     return check_live_stack(prom_url=prom_url, loki_url=loki_url)
+
+
+def probe_guided_catalog_endpoints(
+    prom_url: str,
+    loki_url: str,
+    namespace: str = "default",
+) -> dict[str, Any]:
+    """
+    Background prefetch for Guided Custom Discovery (Ping OK → warm cache).
+
+    Returns a plain dict so Qt signals stay pickle-friendly across threads:
+    ``{"ok": True, "catalog": GuidedCatalog, "namespace": str}`` or
+    ``{"ok": False, "error": str, "namespace": str}``.
+    """
+    from chaosgen.ingestion.telemetry_factory import (
+        build_loki_client,
+        build_prometheus_client,
+    )
+    from chaosgen.telemetry.guided_discovery import probe_guided_catalog
+
+    ns = (namespace or "default").strip() or "default"
+    try:
+        prom = build_prometheus_client(prom_url)
+        loki = build_loki_client(loki_url)
+        catalog = probe_guided_catalog(prom, loki, namespace=ns)
+        return {"ok": True, "catalog": catalog, "namespace": ns}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "namespace": ns}
 
 
 def test_llm_provider(provider: str, model: str | None = None) -> tuple[bool, str]:
@@ -105,6 +147,26 @@ def run_gui_analysis_pipeline(
     if request.n_clusters:
         settings.anomaly.n_clusters = request.n_clusters
 
+    # --- START MODIFICATION ---
+    # P0: apply Telemetry-tab session ingest override (memory only)
+    if request.telemetry_profile:
+        settings.ingest.telemetry_profile = request.telemetry_profile
+    if request.extra_packs is not None:
+        settings.ingest.extra_packs = list(request.extra_packs)
+    if request.scope_namespace:
+        settings.ingest.scope_namespace = request.scope_namespace
+    else:
+        settings.ingest.scope_namespace = resolve_scope_namespace(settings)
+
+    pack_override = None
+    if request.ingest_mode == "custom":
+        if not request.custom_queries:
+            raise ValueError("Select at least one metric to proceed")
+        pack_override = discovered_to_pack_queries(
+            discovered_from_dicts(request.custom_queries)
+        )
+    # --- END MODIFICATION ---
+
     if request.source == "export" and request.export_path:
         if progress_cb:
             progress_cb(f"Loading telemetry export: {request.export_path}...")
@@ -119,15 +181,26 @@ def run_gui_analysis_pipeline(
             end=request.end_datetime,
             settings=settings,
         )
+        if pack_override is not None:
+            pack_note = (
+                f"mode=custom queries={len(pack_override.queries)} "
+                f"ns={settings.ingest.scope_namespace}"
+            )
+        else:
+            pack_note = (
+                f"packs={settings.ingest.telemetry_profile}"
+                f"+{settings.ingest.extra_packs} ns={settings.ingest.scope_namespace}"
+            )
         if progress_cb:
             progress_cb(
                 f"Collecting live telemetry ({window.start.isoformat()} → "
-                f"{window.end.isoformat()}, {window.lookback_hours:.1f}h)..."
+                f"{window.end.isoformat()}, {window.lookback_hours:.1f}h; {pack_note})..."
             )
         collector = build_telemetry_collector(
             settings=settings,
             loki_url=request.loki_url,
             prom_url=request.prom_url,
+            pack_queries=pack_override,
         )
         # MODIFIED: use collect_range so absolute GUI datetimes are honored
         dataset = collector.collect_range(

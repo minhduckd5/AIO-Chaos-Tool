@@ -6,6 +6,12 @@ from typing import Dict, List, Optional
 from chaosgen.ingestion.prometheus_client import PrometheusClient
 from chaosgen.ingestion.loki_client import LokiClient
 from chaosgen.schemas.telemetry import TelemetryDataset, TelemetrySnapshot, TimeSeries, LogStream
+from chaosgen.telemetry.pack_loader import (
+    CANONICAL_SERVICE_KEY,
+    PackQuery,
+    ResolvedPackQueries,
+    normalize_series_service_label,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +35,12 @@ class TelemetryCollector:
         self.log_query = log_query
         # MODIFIED: P8 — optional custom PromQL map from settings.ingest
         self.default_custom_queries: Optional[Dict[str, str]] = None
+        # --- START MODIFICATION ---
+        # Form-first telemetry packs (PromQL + LogQL metrics); None = legacy golden path
+        self.pack_queries: Optional[ResolvedPackQueries] = None
+        self.allow_legacy_golden: bool = True
+        self.include_raw_logs: bool = True
+        # --- END MODIFICATION ---
 
     def collect_baseline(
         self,
@@ -127,10 +139,16 @@ class TelemetryCollector:
         from chaosgen.ingestion.prometheus_client import GOLDEN_SIGNAL_QUERIES
 
         metric_values: Dict[str, float] = {}
-        for signal_name, promql in GOLDEN_SIGNAL_QUERIES.items():
+        query_map = dict(GOLDEN_SIGNAL_QUERIES)
+        if self.pack_queries:
+            for q in self.pack_queries.prometheus:
+                query_map[q.signal] = q.query
+
+        for signal_name, promql in query_map.items():
             samples = self.prometheus.query(promql)
             for s in samples:
-                label_key = s.labels.get("service") or s.labels.get("pod") or "unknown"
+                labels = normalize_series_service_label(s.labels, "service")
+                label_key = labels.get(CANONICAL_SERVICE_KEY) or "unknown"
                 metric_values[f"{signal_name}__{label_key}"] = s.value
 
         return TelemetrySnapshot(
@@ -145,13 +163,39 @@ class TelemetryCollector:
         step: str,
         custom_queries: Optional[Dict[str, str]],
     ) -> List[TimeSeries]:
-        all_series = self.prometheus.query_golden_signals(start, end, step)
-        if not all_series:
-            logger.warning(
-                "Golden-signal PromQL returned 0 series (http_requests_total / container_* "
-                "may not exist on this Prometheus). Falling back to infra fallback metrics."
+        # --- START MODIFICATION ---
+        # Packs first (same start/end/step for Prom + Loki), then custom overrides,
+        # then optional legacy golden/infra fallback.
+        all_series: List[TimeSeries] = []
+        pack_had_series = False
+
+        if self.pack_queries:
+            pack_series = self._collect_pack_series(start, end, step, self.pack_queries)
+            all_series.extend(pack_series)
+            pack_had_series = bool(pack_series)
+            logger.info(
+                "Pack queries (%s): %d series",
+                ",".join(self.pack_queries.pack_ids),
+                len(pack_series),
             )
-            all_series = self.prometheus.query_fallback_infra(start, end, step)
+
+        use_legacy = self.allow_legacy_golden and (
+            self.pack_queries is None or not pack_had_series
+        )
+        if use_legacy:
+            golden = self.prometheus.query_golden_signals(start, end, step)
+            if not golden:
+                logger.warning(
+                    "Golden-signal PromQL returned 0 series (http_requests_total / container_* "
+                    "may not exist on this Prometheus). Falling back to infra fallback metrics."
+                )
+                golden = self.prometheus.query_fallback_infra(start, end, step)
+            all_series.extend(golden)
+        elif self.pack_queries is not None and not pack_had_series:
+            logger.warning(
+                "Telemetry packs returned 0 series and allow_legacy_golden=False; "
+                "continuing with custom_promql only"
+            )
 
         if custom_queries:
             for name, promql in custom_queries.items():
@@ -166,8 +210,72 @@ class TelemetryCollector:
                     )
 
         return all_series
+        # --- END MODIFICATION ---
+
+    def _collect_pack_series(
+        self,
+        start: float,
+        end: float,
+        step: str,
+        packs: ResolvedPackQueries,
+    ) -> List[TimeSeries]:
+        """Execute pack PromQL + LogQL metric queries with identical time bounds."""
+        collected: List[TimeSeries] = []
+        for q in packs.prometheus:
+            try:
+                series = self.prometheus.query_range(q.query, start, end, step)
+                collected.extend(self._annotate_pack_series(series, q))
+            except Exception as exc:
+                logger.warning(
+                    "Pack PromQL %s/%s failed (%s); skipping",
+                    q.pack_id,
+                    q.signal,
+                    exc,
+                )
+
+        if packs.loki and not self.loki:
+            logger.warning(
+                "Pack includes Loki LogQL metrics but Loki client is not configured"
+            )
+        elif self.loki:
+            for q in packs.loki:
+                try:
+                    # MODIFIED: identical start/end/step as Prometheus (Gemini pin)
+                    series = self.loki.query_metric_range(q.query, start, end, step)
+                    collected.extend(self._annotate_pack_series(series, q))
+                except Exception as exc:
+                    logger.warning(
+                        "Pack LogQL %s/%s failed (%s); skipping",
+                        q.pack_id,
+                        q.signal,
+                        exc,
+                    )
+        return collected
+
+    @staticmethod
+    def _annotate_pack_series(
+        series: List[TimeSeries], query: PackQuery
+    ) -> List[TimeSeries]:
+        """Rename series to pack__{signal} and canonicalize service label."""
+        annotated: List[TimeSeries] = []
+        for ts in series:
+            labels = normalize_series_service_label(ts.labels, query.service_label)
+            # Keep only canonical service for FeatureEngineer column identity
+            slim: Dict[str, str] = {}
+            if CANONICAL_SERVICE_KEY in labels:
+                slim[CANONICAL_SERVICE_KEY] = labels[CANONICAL_SERVICE_KEY]
+            annotated.append(
+                TimeSeries(
+                    metric_name=query.metric_name,
+                    labels=slim,
+                    samples=ts.samples,
+                )
+            )
+        return annotated
 
     def _collect_logs(self, start: float, end: float) -> List[LogStream]:
+        if not self.include_raw_logs:
+            return []
         if not self.loki:
             logger.debug("Loki client not configured; skipping log collection.")
             return []

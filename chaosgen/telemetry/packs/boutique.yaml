@@ -1,0 +1,39 @@
+# Online Boutique / registry-vm recording rules (microservices-demo Sprint A–C).
+# Series use service_name (not spanmetrics "service").
+id: boutique
+version: "1"
+service_label: service_name
+scope_vars:
+  - namespace
+signals:
+  request_rate:
+    source: prometheus
+    promql: boutique:http_requests:rate5m
+  error_rate:
+    source: prometheus
+    promql: boutique:http_errors:rate5m
+  error_ratio:
+    source: prometheus
+    promql: boutique:http_error_ratio:rate5m
+  latency_p95:
+    source: prometheus
+    promql: boutique:http_latency:p95
+  latency_p99:
+    source: prometheus
+    promql: boutique:http_latency:p99
+  replicas_available:
+    source: prometheus
+    # No service_name on KSM deployment series — pack loader leaves identity empty.
+    promql: 'kube_deployment_status_replicas_available{namespace="$namespace"}'
+  frontend_health:
+    source: prometheus
+    promql: 'min(probe_success{job="blackbox-frontend"})'
+  span_error_rate:
+    source: prometheus
+    promql: |
+      sum by (service_name) (
+        label_replace(
+          rate(traces_spanmetrics_calls_total{status_code="STATUS_CODE_ERROR"}[5m]),
+          "service_name", "$1", "service", "(.*)"
+        )
+      )

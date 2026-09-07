@@ -179,6 +179,13 @@ class IngestSettings(BaseModel):
 
     log_query: str = '{namespace=~".+"}'
     custom_promql: dict[str, str] = Field(default_factory=dict)
+    # --- START MODIFICATION ---
+    # Form-first telemetry packs (ADR: telemetry-packs-form-first)
+    telemetry_profile: str = "boutique"
+    extra_packs: list[str] = Field(default_factory=list)
+    scope_namespace: str = "default"
+    allow_legacy_golden: bool = True
+    # --- END MODIFICATION ---
 
     @model_validator(mode="after")
     def validate_custom_promql(self) -> IngestSettings:
@@ -189,6 +196,34 @@ class IngestSettings(BaseModel):
                 raise ValueError(
                     f"ingest.custom_promql[{name!r}] must be a non-empty PromQL string"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def validate_telemetry_packs(self) -> IngestSettings:
+        # MODIFIED: reject unknown pack ids at settings load (deterministic packs only)
+        from chaosgen.telemetry.pack_loader import list_available_packs
+
+        available = set(list_available_packs())
+        profile = (self.telemetry_profile or "").strip()
+        if not profile:
+            raise ValueError("ingest.telemetry_profile must be a non-empty pack id")
+        unknown = [profile] if profile not in available else []
+        for pack_id in self.extra_packs:
+            pid = (pack_id or "").strip()
+            if not pid:
+                raise ValueError("ingest.extra_packs entries must be non-empty strings")
+            if pid not in available:
+                unknown.append(pid)
+        if unknown:
+            raise ValueError(
+                f"Unknown telemetry pack(s) {unknown}; available: {sorted(available)}"
+            )
+        ns = (self.scope_namespace or "").strip()
+        if not ns:
+            raise ValueError("ingest.scope_namespace must be a non-empty string")
+        self.telemetry_profile = profile
+        self.scope_namespace = ns
+        self.extra_packs = [(p or "").strip() for p in self.extra_packs]
         return self
 
 

@@ -21,9 +21,9 @@
 
 ## Tên đề tài
 
-**ChaosGen: Chaos Engineering dựa trên AI cho hệ thống đa kiến trúc**
+**An AI-assistant for Chaos Engineering**
 
-*(Bản tiếng Anh nộp form: ChaosGen: AI-Driven Chaos Engineering for Multi-Architecture Systems)*
+*(Trợ lý AI cho Chaos Engineering — thầy đã chốt bản tiếng Anh này; bỏ “-driven” vì khó hiểu.)*
 
 ---
 
@@ -31,14 +31,11 @@
 
 *(mô tả ngắn sản phẩm đầu ra)*
 
-Xây dựng **ChaosGen** — **nền tảng control plane** Chaos Engineering dựa trên AI (CLI + GUI), bao phủ vòng đời: thu thập telemetry → phát hiện bất thường → lọc sự cố thật → sinh và xếp hạng kịch bản chaos **theo kiến trúc** → phê duyệt human-in-the-loop (HITL) → thực thi an toàn trên Kubernetes/Docker/bare metal → đánh giá KPI.
+Xây dựng **ChaosGen** — trợ lý AI hỗ trợ vận hành Chaos Engineering an toàn xuyên suốt vòng đời: thu thập telemetry, phát hiện bất thường, lọc sự cố thật, gợi ý kịch bản chaos theo kiến trúc, phê duyệt HITL, thực thi trên Kubernetes/Docker/bare metal, và đánh giá KPI.
 
 **Mục tiêu cụ thể:**
 
-1. **Nghiên cứu:** Mô hình hóa khung *Unknown → Describe → Known* kết hợp gatekeeper (frequency × severity), chuyển từ xử lý sự cố phản ứng sang hướng *predictive maintenance* với rủi ro dư thừa có kiểm soát. Khung áp dụng cho **hệ thống đa kiến trúc** (microservices, monolith, event-driven, serverless/client–server, …).
-2. **Hiện thực:** Pipeline Python (`chaosgen`) gồm ingestion Prometheus/Loki, ML anomaly (IsolationForest/KMeans), advisor LLM/catalog theo architecture profile, orchestrator + HITL, lớp an toàn (blast radius, dead man’s switch), UCAL bọc ≥6 công cụ chaos, và **discovery/profile kiến trúc** để chọn catalog & prompt phù hợp.
-3. **Đánh giá theo pha:** Ổn định và đánh giá sâu trên **microservices** (lab/cluster K8s) — ≥1 case study cụ thể *make sense* + tổng hợp KPI nhiều case; sau đó **mở rộng** ≥1 kiến trúc bổ sung (vd. monolith hoặc event-driven/serverless) để chứng minh tính đa kiến trúc.
-4. **Sản phẩm bàn giao:** Prototype đa-profile, tài liệu kiến trúc/pipeline, báo cáo luận văn, demo E2E (analyze → generate → approve → inject → evaluate) trên ≥2 kiểu kiến trúc (microservices là đường chính; kiến trúc thứ hai theo lab/dataset sẵn có).
+Xây dựng vòng tư vấn *Unknown → Describe → Known* cho hệ thống đa kiến trúc; hiện thực pipeline Python (`chaosgen`) gồm ML, advisor LLM/catalog, HITL và inject đa công cụ (UCAL); đánh giá sâu trên microservices rồi mở rộng ≥1 kiến trúc khác; bàn giao prototype, tài liệu, báo cáo luận văn và demo E2E (analyze → generate → approve → inject → evaluate).
 
 ---
 
@@ -46,15 +43,7 @@ Xây dựng **ChaosGen** — **nền tảng control plane** Chaos Engineering d�
 
 *(liệt kê các yêu cầu lớn của đề tài)*
 
-1. **Phạm vi đa kiến trúc:** Thiết kế hệ thống cho **nhiều kiểu kiến trúc** (microservices, monolith, event-driven, serverless, …). **Pha 1:** ổn định vòng Unknown→Known + inject/eval trên microservices (K8s/Docker). **Pha 2:** bật/hoàn thiện profile, catalog, prompt cho các kiểu khác — không khóa đề tài chỉ ở microservices.
-2. **Discovery / profile:** Chọn profile **form-first** (`hints.architecture` + khối `connect` trong settings/GUI; auto-discovery heuristic hoãn lại). Người vận hành khai báo ý định; observability được probe khi cấu hình. Microservices là đường đánh giá chính; **modular monolith** là case inject live thứ hai (Docker Compose / Pumba). Các profile còn lại (event-driven, monolith, client–server, serverless) dùng catalog + dry-run cho phạm vi luận văn.
-3. **Dữ liệu & ML:** Ingest metrics/logs; train/đánh giá anomaly trên **từng phần** dataset công khai (RCAEval, Nezha, Eadro, …) + dữ liệu inject lab — không train toàn bộ dump TB; ưu tiên corpus khớp từng kiến trúc khi mở rộng.
-4. **Advisor pipeline:** Gatekeeper REAL/CHRONIC; mô tả có cấu trúc cho sự cố unknown; sinh/xếp hạng scenario theo kiến trúc; promote vào catalog known sau HITL.
-5. **Thực thi chaos an toàn:** State machine + HITL bắt buộc; giới hạn blast radius; blocked namespaces (vd. `kube-system`); hỗ trợ dry-run; inject thật chỉ trên staging/lab (không production).
-6. **Tích hợp công cụ:** Abstraction UCAL cho Chaos Toolkit, Pumba, Toxiproxy, Kube-Monkey, … (và/hoặc Chaos Mesh/Litmus trên cluster trường khi có).
-7. **Đánh giá:** ≥1 case study microservices chi tiết *make sense* + tổng hợp KPI nhiều case (latency, error rate, recovery/rollback); thêm ≥1 case/demo kiến trúc không-microservices (theo lab/dataset khả dụng).
-8. **Giao diện & vận hành:** CLI tự động hóa + GUI PySide6 cho review HITL; secrets qua `.env` (không hard-code); chọn/override architecture profile từ CLI/GUI.
-9. **Bàn giao học thuật:** SRS/architecture đa-profile, pipeline framework khớp khung thầy hướng dẫn, báo cáo LVTN, demo trên cụm K8s lab (master + nodes) nếu được cấp access.
+Hỗ trợ nhiều architecture profile (microservices là đường chính; modular monolith là case inject live thứ hai; các kiểu còn lại qua catalog/dry-run); chọn profile form-first; ingest metrics/logs và ML trên dataset công khai/lab đã chọn; gatekeeper REAL/CHRONIC và HITL trước khi inject; an toàn blast-radius + dry-run (chỉ lab/staging); UCAL bọc các công cụ chaos phổ biến; CLI + GUI; bàn giao học thuật (tài liệu, luận văn, demo lab) với KPI đo được trên ≥2 kiểu kiến trúc.
 
 ---
 

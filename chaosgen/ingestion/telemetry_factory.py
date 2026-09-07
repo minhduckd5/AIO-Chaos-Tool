@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import logging
+
 from chaosgen.config.secrets import load_secrets
 from chaosgen.config.settings import ChaosGenSettings
 from chaosgen.config.telemetry_endpoints import resolve_loki_url, resolve_prometheus_url
 from chaosgen.ingestion.collector import TelemetryCollector, DEFAULT_LOG_QUERY
 from chaosgen.ingestion.loki_client import LokiClient
 from chaosgen.ingestion.prometheus_client import PrometheusClient
+from chaosgen.telemetry.pack_loader import ResolvedPackQueries
+
+logger = logging.getLogger(__name__)
 
 
 def build_prometheus_client(
@@ -37,8 +42,11 @@ def build_telemetry_collector(
     log_query: str | None = None,
     prom_url: str | None = None,
     loki_url: str | None = None,
+    pack_queries: ResolvedPackQueries | None = None,
 ) -> TelemetryCollector:
     # MODIFIED: P8 — log_query / custom_promql from settings.ingest
+    # MODIFIED: form-first telemetry packs attached when settings present
+    # MODIFIED: pack_queries override for Guided Custom (session-only; no disk write)
     resolved_log_query = log_query
     if resolved_log_query is None:
         if settings is not None:
@@ -50,8 +58,27 @@ def build_telemetry_collector(
     collector = TelemetryCollector(
         prometheus=prom, loki=loki, log_query=resolved_log_query
     )
-    if settings is not None and settings.ingest.custom_promql:
-        collector.default_custom_queries = dict(settings.ingest.custom_promql)
+    if settings is not None:
+        if settings.ingest.custom_promql:
+            collector.default_custom_queries = dict(settings.ingest.custom_promql)
+        collector.allow_legacy_golden = bool(settings.ingest.allow_legacy_golden)
+    # --- START MODIFICATION ---
+    # Session override (Guided Custom) wins over settings packs
+    if pack_queries is not None:
+        collector.pack_queries = pack_queries
+    elif settings is not None:
+        try:
+            from chaosgen.telemetry.pack_loader import resolve_packs
+
+            collector.pack_queries = resolve_packs(
+                settings.ingest.telemetry_profile,
+                extra_packs=settings.ingest.extra_packs,
+                namespace=settings.ingest.scope_namespace,
+            )
+        except ValueError as exc:
+            logger.warning("Telemetry pack resolve failed (%s); legacy golden only", exc)
+            collector.pack_queries = None
+    # --- END MODIFICATION ---
     return collector
 
 

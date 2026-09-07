@@ -23,7 +23,15 @@ DEFAULT_RULES_PATH = Path("examples/canonical_features.yaml")
 _STAT_SUFFIXES = ("mean", "std", "roc", "p95", "p99")
 
 # MODIFIED: per-service pooling for boutique/lab golden signals (Phase 2 RCA attribution)
-_PER_SERVICE_SIGNALS = frozenset({"errors", "request_rate", "latency", "availability"})
+# MODIFIED: pack__ series + log signals for telemetry packs
+_PER_SERVICE_SIGNALS = frozenset({
+    "errors",
+    "request_rate",
+    "latency",
+    "availability",
+    "log_volume",
+    "log_error_rate",
+})
 _PASSTHROUGH_PREFIXES = (
     "custom__error",
     "custom__request_rate",
@@ -32,11 +40,20 @@ _PASSTHROUGH_PREFIXES = (
     "custom__replicas",
     "custom__frontend_health",
     "custom__span_error",
+    "pack__error",
+    "pack__request_rate",
+    "pack__latency",
+    "pack__error_ratio",
+    "pack__replicas",
+    "pack__frontend_health",
+    "pack__span_error",
+    "pack__log_error",
+    "pack__log_volume",
 )
 
 # Signal bucket names — never treat as microservice identities
 _NON_SERVICE_TOKENS = frozenset({
-    "custom", "canonical", "latency", "memory", "cpu", "disk", "network",
+    "custom", "canonical", "pack", "latency", "memory", "cpu", "disk", "network",
     "errors", "request", "request_rate", "error_rate", "error_ratio",
     "availability", "saturation", "log_volume", "log_error_rate",
     "mean", "std", "roc", "p95", "p99", "unknown",
@@ -57,6 +74,7 @@ def extract_service_from_column(name: str) -> str | None:
 
     Supported shapes:
       custom__{category}__{metric}__{service}__{stat}
+      pack__{signal}__{service}__{stat}
       canonical__{signal}__{service}__{stat}
       {metric}__{service}__{stat}
     """
@@ -69,6 +87,8 @@ def extract_service_from_column(name: str) -> str | None:
         return None
 
     if parts[0] == "custom" and len(parts) >= 5:
+        candidate = parts[-2]
+    elif parts[0] == "pack" and len(parts) >= 4:
         candidate = parts[-2]
     elif parts[0] == "canonical" and len(parts) >= 4:
         candidate = parts[-2]

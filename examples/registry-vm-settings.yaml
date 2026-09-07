@@ -3,7 +3,7 @@
 #   chaosgen analyze --config examples/registry-vm-settings.yaml
 #
 # Observability stack: registry-vm @ 10.50.1.220 (microservices-demo-1 Sprint A–C)
-# Golden signals: Prometheus recording rules boutique:http_* (service_name label)
+# Golden signals: form-first pack `boutique` (chaosgen/telemetry/packs/boutique.yaml)
 
 hints:
   architecture: microservices
@@ -43,25 +43,17 @@ features:
   canonical_rules_path: examples/canonical_features.yaml
 
 ingest:
-  # Promtail on K3s → remote Loki (namespace/app labels from Sprint A2)
+  # Form-first packs — PromQL/LogQL live in chaosgen/telemetry/packs/
+  telemetry_profile: boutique
+  extra_packs:
+    - cadvisor
+    - loki_system
+  scope_namespace: default
+  allow_legacy_golden: true
+  # Optional raw log streams (legacy); pack LogQL metrics are preferred for ML
   log_query: '{namespace="default", app=~".+"}'
-  # Canonical metrics from microservices-demo recording rules + KSM + synthetics.
-  # Series appear as custom__<key>__* with service_name label (not spanmetrics "service").
-  custom_promql:
-    request_rate: 'boutique:http_requests:rate5m'
-    error_rate: 'boutique:http_errors:rate5m'
-    error_ratio: 'boutique:http_error_ratio:rate5m'
-    latency_p99: 'boutique:http_latency:p99'
-    latency_p95: 'boutique:http_latency:p95'
-    replicas_available: 'kube_deployment_status_replicas_available{namespace="default"}'
-    frontend_health: 'min(probe_success{job="blackbox-frontend"})'
-    span_error_rate: |
-      sum by (service_name) (
-        label_replace(
-          rate(traces_spanmetrics_calls_total{status_code="STATUS_CODE_ERROR"}[5m]),
-          "service_name", "$1", "service", "(.*)"
-        )
-      )
+  # Operator overrides only — empty by default (queries live in boutique.yaml)
+  custom_promql: {}
 
 advisor:
   confidence_threshold: 0.6
