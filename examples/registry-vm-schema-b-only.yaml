@@ -1,0 +1,62 @@
+# Schema B-only profile — portability check (no boutique spanmetrics / Schema A).
+hints:
+  architecture: microservices
+  environment: kubernetes
+  skip_auto_detect: true
+  observability:
+    - tool: prometheus
+      url: http://10.50.1.220:9090
+      auth:
+        auth_type: none
+    - tool: loki
+      url: http://10.50.1.220:3100
+      auth:
+        auth_type: none
+
+llm_provider: ollama
+llm_model: llama3.2:3b
+
+telemetry:
+  default_lookback_hours: 2
+  step: "15s"
+
+anomaly:
+  clustering_mode: auto
+  n_clusters: 5
+  min_clusters: 2
+  max_clusters: 15
+  contamination: 0.1
+
+features:
+  rolling_window_seconds: 300
+  resample_step_seconds: 60
+  zscore_threshold: 3.0
+  canonical_enabled: true
+  canonical_rules_path: examples/canonical_features.yaml
+
+ingest:
+  # --- START MODIFICATION ---
+  # E2.1 comparison mode: Schema B alone (no boutique / cadvisor / loki)
+  telemetry_profile: boutique_otel_app
+  extra_packs: []
+  scope_namespace: default
+  allow_legacy_golden: false
+  log_query: '{namespace="default", app=~".+"}'
+  custom_promql: {}
+  # --- END MODIFICATION ---
+
+advisor:
+  confidence_threshold: 0.6
+  top_n_scenarios: 5
+
+safety:
+  max_affected_nodes: 2
+  max_affected_pods_percent: 20
+  max_services_per_suite: 3
+  blocked_namespaces: [kube-system, observability-agents]
+  blocked_services: [redis-cart]
+
+inject:
+  enabled: true
+  kubeconfig: ~/.kube/config
+  default_namespace: default

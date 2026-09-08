@@ -1,0 +1,2 @@
+# Trained joblib baselines are local lab artifacts (gitignored).
+# Place models here after training, or copy from your private lab cache.

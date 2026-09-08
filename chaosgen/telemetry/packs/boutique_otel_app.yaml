@@ -1,0 +1,85 @@
+# Online Boutique Schema B — app OTLP metrics ((a)-lite: frontend HTTP + checkout gRPC).
+# Pack id boutique_otel_app (neutral; not _http): maps http_server_* AND rpc_server_*.
+#
+# Signal names are otel_* (not request_rate/error_rate) so resolve_packs does NOT
+# override Schema A boutique.yaml slots — both packs coexist; canonical mapper still
+# pools otel_* into request_rate / errors / latency via fragment aliases.
+id: boutique_otel_app
+version: "1"
+service_label: service_name
+scope_vars:
+  - namespace
+signals:
+  # --- START MODIFICATION ---
+  # Dual family: HTTP (frontend) OR RPC (checkoutservice) → one vector per service_name
+  otel_request_rate:
+    source: prometheus
+    promql: |
+      sum by (service_name) (
+        rate(http_server_request_duration_seconds_count{
+          service_name=~"frontend|checkoutservice"
+        }[5m])
+      )
+      or
+      sum by (service_name) (
+        rate(rpc_server_call_duration_seconds_count{
+          service_name=~"frontend|checkoutservice"
+        }[5m])
+      )
+  otel_error_rate:
+    source: prometheus
+    promql: |
+      sum by (service_name) (
+        rate(http_server_request_duration_seconds_count{
+          service_name=~"frontend|checkoutservice",
+          http_response_status_code=~"5.."
+        }[5m])
+      )
+      or
+      sum by (service_name) (
+        rate(rpc_server_call_duration_seconds_count{
+          service_name=~"frontend|checkoutservice",
+          rpc_response_status_code!="OK"
+        }[5m])
+      )
+  otel_latency_p95:
+    source: prometheus
+    promql: |
+      histogram_quantile(
+        0.95,
+        sum by (service_name, le) (
+          rate(http_server_request_duration_seconds_bucket{
+            service_name=~"frontend|checkoutservice"
+          }[5m])
+        )
+      )
+      or
+      histogram_quantile(
+        0.95,
+        sum by (service_name, le) (
+          rate(rpc_server_call_duration_seconds_bucket{
+            service_name=~"frontend|checkoutservice"
+          }[5m])
+        )
+      )
+  otel_latency_p99:
+    source: prometheus
+    promql: |
+      histogram_quantile(
+        0.99,
+        sum by (service_name, le) (
+          rate(http_server_request_duration_seconds_bucket{
+            service_name=~"frontend|checkoutservice"
+          }[5m])
+        )
+      )
+      or
+      histogram_quantile(
+        0.99,
+        sum by (service_name, le) (
+          rate(rpc_server_call_duration_seconds_bucket{
+            service_name=~"frontend|checkoutservice"
+          }[5m])
+        )
+      )
+  # --- END MODIFICATION ---

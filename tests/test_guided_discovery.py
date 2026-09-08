@@ -38,7 +38,45 @@ def test_classify_and_pack_aligned():
     assert classify_bucket("istio_requests_total") in ("traffic", "errors")
     assert classify_bucket("container_memory_working_set_bytes") == "saturation"
     assert is_pack_aligned("http_requests_total", "traffic")
+    assert is_pack_aligned("boutique:http_requests:rate5m", "traffic")
     assert is_pack_aligned("container_cpu_cfs_throttled_seconds_total", "saturation")
+    # Lab regression: ops noise must NOT be Suggested
+    assert not is_pack_aligned("alertmanager_notification_requests_total", "traffic")
+    assert not is_pack_aligned("node_disk_flush_requests_total", "traffic")
+    assert not is_pack_aligned("prometheus_http_requests_total", "traffic")
+
+
+def test_suggested_bucket_diversity_excludes_ops_noise():
+    """Lab root-cause: alphabetical traffic-only cap preferred alertmanager/node."""
+    catalog = build_catalog_from_names(
+        [
+            "alertmanager_notification_requests_total",
+            "node_disk_flush_requests_total",
+            "prometheus_http_requests_total",
+            "boutique:http_requests:rate5m",
+            "boutique:http_errors:rate5m",
+            "boutique:http_latency:p95",
+            "http_request_duration_seconds_bucket",
+            "container_cpu_usage_seconds_total",
+            "container_memory_working_set_bytes",
+            "rpc_server_duration_count",
+            "go_goroutines",
+        ],
+        namespace="default",
+        service_label="service_name",
+        loki_apps=["frontend"],
+        include_loki=True,
+    )
+    sug = catalog.suggested
+    assert 1 <= len(sug) <= 6
+    names = {q.metric for q in sug}
+    assert "alertmanager_notification_requests_total" not in names
+    assert "node_disk_flush_requests_total" not in names
+    assert "prometheus_http_requests_total" not in names
+    assert "boutique:http_requests:rate5m" in names
+    buckets = {q.bucket for q in sug}
+    # Diversity: not traffic-only when other buckets available
+    assert "logs" in buckets or "saturation" in buckets or "errors" in buckets
 
 
 def test_wrap_promql_uses_5m_window():

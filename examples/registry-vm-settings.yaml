@@ -48,6 +48,8 @@ ingest:
   extra_packs:
     - cadvisor
     - loki_system
+    # Schema B ((a)-lite): http_server_* + rpc_server_* — not HTTP-only
+    - boutique_otel_app
   scope_namespace: default
   allow_legacy_golden: true
   # Optional raw log streams (legacy); pack LogQL metrics are preferred for ML

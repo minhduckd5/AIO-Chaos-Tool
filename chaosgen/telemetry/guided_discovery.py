@@ -60,30 +60,50 @@ _SATURATION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Pack-aligned Suggested: enterprise Default signal families
+# Pack-aligned Suggested: enterprise Default signal families (tight — avoid ops noise)
 _PACK_ALIGNED: dict[Bucket, tuple[re.Pattern[str], ...]] = {
     "traffic": (
-        re.compile(r"http_requests_total|boutique:http_requests|rpc_server.*count", re.I),
-        re.compile(r"request.*rate|requests_total$", re.I),
+        re.compile(r"^boutique:http_requests", re.I),
+        re.compile(r"(^|_)http_requests_total$", re.I),
+        re.compile(r"http_server_requests(_seconds)?_(count|total)$", re.I),
+        re.compile(r"rpc_server_(duration_count|handled_total|request_size_count)$", re.I),
+        re.compile(r"traces_spanmetrics_calls_total$|grpc_server_handled_total$", re.I),
     ),
     "errors": (
-        re.compile(r"http_.*error|errors?_total|status_code_error|5\.\.|span.*error", re.I),
-        re.compile(r"boutique:http_errors", re.I),
+        re.compile(r"^boutique:http_errors|^boutique:http_error_ratio", re.I),
+        re.compile(r"http_.*errors?_total$|errors?_total$|status_code_error", re.I),
+        re.compile(r"traces_spanmetrics_calls_total.*STATUS_CODE_ERROR|span.*error", re.I),
     ),
     "latency": (
-        re.compile(r"duration.*_bucket|latency.*bucket|http_request_duration", re.I),
-        re.compile(r"boutique:http_latency", re.I),
+        re.compile(r"^boutique:http_latency", re.I),
+        re.compile(r"http_request_duration.*_bucket$|rpc_server_duration_bucket$", re.I),
+        re.compile(r"http_server_requests_seconds_bucket$", re.I),
     ),
     "saturation": (
-        re.compile(r"container_cpu_usage|container_memory_working_set|cfs_throttled", re.I),
-        re.compile(r"container_network_(receive|transmit)_bytes", re.I),
+        re.compile(r"container_cpu_usage_seconds_total|container_memory_working_set_bytes", re.I),
+        re.compile(r"container_cpu_cfs_throttled|container_network_(receive|transmit)_bytes_total", re.I),
     ),
     "logs": (
-        re.compile(r"log_error|log_volume", re.I),
+        re.compile(r"loki_error_rate|log_error", re.I),
     ),
 }
 
+# Never mark Suggested for control-plane / exporter / node noise (still listable in Custom)
+_SUGGEST_DENY_RE = re.compile(
+    r"^(alertmanager_|prometheus_|node_|grafana_|etcd_|coredns_|"
+    r"apiserver_|kubelet_|kube_proxy|netdata_|windows_)",
+    re.I,
+)
+
 _SERVICE_LABEL_PREF = ("service_name", "service", "app", "pod", "container_name")
+_BUCKET_ORDER: tuple[Bucket, ...] = (
+    "traffic",
+    "errors",
+    "latency",
+    "saturation",
+    "logs",
+)
+_MAX_SUGGESTED = 6
 
 
 @dataclass(frozen=True)
@@ -161,8 +181,80 @@ def classify_bucket(metric: str) -> Bucket | None:
 
 
 def is_pack_aligned(metric: str, bucket: Bucket) -> bool:
+    if _SUGGEST_DENY_RE.search(metric):
+        return False
     patterns = _PACK_ALIGNED.get(bucket, ())
     return any(p.search(metric) for p in patterns)
+
+
+def _suggest_preference(q: DiscoveredQuery) -> tuple:
+    """Lower tuple sorts first — prefer boutique / Loki / cAdvisor over loose HTTP."""
+    m = q.metric.lower()
+    if q.source == "loki" or m.startswith("loki_"):
+        rank = 0
+    elif m.startswith("boutique:"):
+        rank = 1
+    elif m.startswith("container_"):
+        rank = 2
+    elif m.startswith("rpc_server") or "grpc_server" in m:
+        rank = 3
+    elif "http_request" in m or "http_server_request" in m:
+        rank = 4
+    else:
+        rank = 5
+    return (rank, m)
+
+
+def finalize_suggested(
+    queries: Sequence[DiscoveredQuery],
+    *,
+    max_suggested: int = _MAX_SUGGESTED,
+) -> list[DiscoveredQuery]:
+    """
+    Cap ★ Suggested to ~max_suggested with bucket diversity (round-robin).
+
+    Root cause addressed: alphabetical traffic-only cap selected alertmanager /
+    node_disk / prometheus_http ahead of RED+USE coverage.
+    """
+    candidates: dict[Bucket, list[DiscoveredQuery]] = {b: [] for b in _BUCKET_ORDER}
+    for q in queries:
+        if q.suggested:
+            candidates[q.bucket].append(q)
+    for b in candidates:
+        candidates[b].sort(key=_suggest_preference)
+
+    keep_ids: set[str] = set()
+    while len(keep_ids) < max_suggested:
+        progressed = False
+        for b in _BUCKET_ORDER:
+            for q in candidates[b]:
+                if q.id not in keep_ids:
+                    keep_ids.add(q.id)
+                    progressed = True
+                    break
+            if len(keep_ids) >= max_suggested:
+                break
+        if not progressed:
+            break
+
+    out: list[DiscoveredQuery] = []
+    for q in queries:
+        if q.suggested and q.id not in keep_ids:
+            out.append(
+                DiscoveredQuery(
+                    id=q.id,
+                    bucket=q.bucket,
+                    metric=q.metric,
+                    query=q.query,
+                    source=q.source,
+                    suggested=False,
+                    service_label=q.service_label,
+                    display_name=q.display_name,
+                )
+            )
+        else:
+            out.append(q)
+    return out
 
 
 def pick_service_label(
@@ -264,9 +356,6 @@ def build_catalog_from_names(
                 continue
         qid = re.sub(r"[^a-z0-9_]+", "_", metric.lower()).strip("_")[:80]
         suggested = is_pack_aligned(metric, bucket)
-        # Saturation container_* always pack-aligned-ish
-        if bucket == "saturation" and metric.startswith("container_"):
-            suggested = True
         query = wrap_promql(metric, bucket, service_label)
         dq = DiscoveredQuery(
             id=qid,
@@ -300,35 +389,7 @@ def build_catalog_from_names(
         )
         queries.append(loki_q)
 
-    # Cap total suggested flags to ~6 for Apply Suggested UX (keep marks but
-    # ensure at least pack-aligned ones; if too many suggested, demote extras)
-    suggested_idxs = [i for i, q in enumerate(queries) if q.suggested]
-    if len(suggested_idxs) > 6:
-        # Keep first 6 in bucket priority order
-        priority = {"traffic": 0, "errors": 1, "latency": 2, "saturation": 3, "logs": 4}
-        ranked = sorted(
-            suggested_idxs,
-            key=lambda i: (priority.get(queries[i].bucket, 9), queries[i].metric),
-        )
-        keep = set(ranked[:6])
-        new_queries: list[DiscoveredQuery] = []
-        for i, q in enumerate(queries):
-            if q.suggested and i not in keep:
-                new_queries.append(
-                    DiscoveredQuery(
-                        id=q.id,
-                        bucket=q.bucket,
-                        metric=q.metric,
-                        query=q.query,
-                        source=q.source,
-                        suggested=False,
-                        service_label=q.service_label,
-                        display_name=q.display_name,
-                    )
-                )
-            else:
-                new_queries.append(q)
-        queries = new_queries
+    queries = finalize_suggested(queries, max_suggested=_MAX_SUGGESTED)
 
     summary_parts = []
     if any(q.bucket == "traffic" for q in queries):

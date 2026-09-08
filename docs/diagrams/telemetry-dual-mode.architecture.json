@@ -1,0 +1,273 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Telemetry Dual-Mode Ingest",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "default-path",
+        "label": "Default form-first",
+        "focus": ["advisor", "settings", "packs", "loader", "collector", "prom", "loki", "canonical"],
+        "note": "Deterministic enterprise packs; settings.yaml declares parameters only."
+      },
+      {
+        "id": "custom-path",
+        "label": "Custom guided discovery",
+        "focus": ["advisor", "request", "guided", "collector", "prom", "loki", "canonical"],
+        "note": "Operator-initiated Beta path; session ticks stay in AnalysisRequest RAM."
+      },
+      {
+        "id": "boundary",
+        "label": "Architecture boundary",
+        "focus": ["advisor", "guided", "archgate"],
+        "note": "Guided discovery selects signals only; topology auto-discovery stays deferred."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "archgate",
+      "type": "security",
+      "label": "Form-First Arch",
+      "sublabel": "no topology discovery",
+      "pos": [40, 80],
+      "size": [150, 64],
+      "tag": "ADR boundary"
+    },
+    {
+      "id": "advisor",
+      "type": "frontend",
+      "label": "Advisor Step 1",
+      "sublabel": "Default | Custom Beta",
+      "pos": [40, 300],
+      "size": [150, 64]
+    },
+    {
+      "id": "request",
+      "type": "backend",
+      "label": "AnalysisRequest",
+      "sublabel": "ingest_mode session",
+      "pos": [280, 120],
+      "size": [150, 64],
+      "tag": "RAM only"
+    },
+    {
+      "id": "settings",
+      "type": "database",
+      "label": "settings.yaml",
+      "sublabel": "scope_namespace",
+      "pos": [280, 460],
+      "size": [150, 64],
+      "tag": "disk"
+    },
+    {
+      "id": "guided",
+      "type": "backend",
+      "label": "guided_discovery",
+      "sublabel": "filter · suggest · template",
+      "pos": [560, 120],
+      "size": [170, 64],
+      "tag": "Beta"
+    },
+    {
+      "id": "packs",
+      "type": "backend",
+      "label": "YAML Packs",
+      "sublabel": "boutique · cAdvisor · Loki",
+      "pos": [560, 460],
+      "size": [170, 64]
+    },
+    {
+      "id": "loader",
+      "type": "backend",
+      "label": "pack_loader",
+      "sublabel": "resolve_packs",
+      "pos": [860, 460],
+      "size": [140, 64]
+    },
+    {
+      "id": "collector",
+      "type": "backend",
+      "label": "TelemetryCollector",
+      "sublabel": "collect_range sync step",
+      "pos": [860, 300],
+      "size": [170, 64]
+    },
+    {
+      "id": "prom",
+      "type": "external",
+      "label": "Prometheus",
+      "sublabel": "PromQL + label_values",
+      "pos": [1160, 100],
+      "size": [150, 64]
+    },
+    {
+      "id": "canonical",
+      "type": "backend",
+      "label": "Canonical Mapper",
+      "sublabel": "service label normalize",
+      "pos": [1160, 300],
+      "size": [150, 64]
+    },
+    {
+      "id": "loki",
+      "type": "external",
+      "label": "Loki",
+      "sublabel": "metric-shaped LogQL",
+      "pos": [1160, 460],
+      "size": [150, 64]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "ChaosGen ingest plane",
+      "wraps": ["advisor", "request", "settings", "packs", "loader", "guided", "collector", "canonical"]
+    },
+    {
+      "kind": "security-group",
+      "label": "Architecture Form-First gate",
+      "wraps": ["archgate", "advisor", "guided"]
+    }
+  ],
+  "connections": [
+    {
+      "id": "ping-enables",
+      "from": "advisor",
+      "to": "request",
+      "label": "Run → session",
+      "variant": "emphasis",
+      "fromSide": "top",
+      "toSide": "left"
+    },
+    {
+      "id": "ns-from-settings",
+      "from": "settings",
+      "to": "advisor",
+      "label": "$namespace",
+      "fromSide": "left",
+      "toSide": "bottom"
+    },
+    {
+      "id": "default-packs",
+      "from": "settings",
+      "to": "packs",
+      "label": "pack profile",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelDy": 56
+    },
+    {
+      "id": "load-packs",
+      "from": "packs",
+      "to": "loader",
+      "label": "YAML",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelDy": 56
+    },
+    {
+      "id": "loader-collect",
+      "from": "loader",
+      "to": "collector",
+      "label": "Default PackQuery",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "custom-guided",
+      "from": "request",
+      "to": "guided",
+      "label": "custom_queries",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelDy": -26
+    },
+    {
+      "id": "prefetch-probe",
+      "from": "guided",
+      "to": "prom",
+      "label": "prefetch",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "guided-collect",
+      "from": "guided",
+      "to": "collector",
+      "label": "Custom PackQuery",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "id": "collect-prom",
+      "from": "collector",
+      "to": "prom",
+      "label": "query_range",
+      "variant": "emphasis",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "collect-loki",
+      "from": "collector",
+      "to": "loki",
+      "label": "LogQL range",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "to-canonical",
+      "from": "collector",
+      "to": "canonical",
+      "label": "normalize",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelDy": -26
+    },
+    {
+      "id": "arch-constrain",
+      "from": "archgate",
+      "to": "guided",
+      "label": "signals only",
+      "variant": "security",
+      "fromSide": "right",
+      "toSide": "top",
+      "labelDy": -18
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Default (Form-First)",
+      "items": [
+        "Curated YAML packs; zero live-discovery overhead",
+        "Namespace from settings/connect — not Step 1",
+        "Canonical v1 aliases preserved; no joblib wipe"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Custom (Beta)",
+      "items": [
+        "Prefetch on Ping OK; Suggested aligns to pack slots",
+        "Session ticks in AnalysisRequest — no settings.yaml write",
+        "Regex typing MVP; /api/v1/metadata deferred to Phase 2"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Hard boundary",
+      "items": [
+        "No cluster topology or ArchitectureClassifier discovery",
+        "Parent ADR: multi-arch remains form-first"
+      ]
+    }
+  ]
+}

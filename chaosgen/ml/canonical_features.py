@@ -49,6 +49,8 @@ _PASSTHROUGH_PREFIXES = (
     "pack__span_error",
     "pack__log_error",
     "pack__log_volume",
+    # MODIFIED: Schema B boutique_otel_app — keep pack columns for dual-pack RCA
+    "pack__otel_",
 )
 
 # Signal bucket names — never treat as microservice identities

@@ -235,8 +235,9 @@ settings.local.yaml
 docs/drafts/
 
 .thesis/
-# Trained ML baselines (local lab artifacts)
-models/
+# Trained ML baselines (local lab artifacts) — keep directory via .gitkeep
+models/*
+!models/.gitkeep
 *.joblib
 
 last_verdict.json
@@ -257,4 +258,46 @@ scratch/ctk/journals/
 # Local GUI / operator dumps
 *.ctk.local.json
 serverless-boundary-*.json
+
+# --- Public-repo hygiene (OSS) ---
+# OS / editor debris
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*~
+.idea/
+.vscode/
+*.code-workspace
+
+# Local AI / agent tooling (never publish)
+.claude/
+.agent/
+.agents/
+.codebase-memory/
+*.codebase-memory*
+
+# Chaos Toolkit / runtime logs at repo root
+chaostoolkit.log
+journal.json
+experiment.json
+
+# Generated diagram visual-check screenshots & harness (keep source JSON/HTML intentionally)
+**/visual-check*.png
+**/visual-check*.html
+**/visual-check*.json
+docs/diagrams/*.visual-check.*
+docs/archify/*.visual-check.*
+
+# Local secrets / operator overrides (never commit real tokens)
+.env.*
+!.env.example
+secrets.yaml
+**/secrets.local.*
+*.pem
+*.p12
+kubeconfig.local
+
+# Keep models/ out of git except placeholder
+# (pattern models/* + !models/.gitkeep is defined above)
 
