@@ -159,7 +159,7 @@ class ExpectationVerdictEngine:
             url: http://frontend/health
           - id: scale_up_sla
             type: prometheus_threshold
-            url: http://192.168.31.220:9090
+            url: http://127.0.0.1:9090
             query: 'sum(kube_deployment_status_replicas_ready{deployment="frontend"})'
             op: ">="
             threshold: 2

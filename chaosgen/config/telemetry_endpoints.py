@@ -13,8 +13,8 @@ from chaosgen.schemas.discovery import ObservabilityProfile, ObservabilityTool
 
 logger = logging.getLogger(__name__)
 
-# MODIFIED: P8 — demote silent hardcoded IP; warn when used as fallback
-DEFAULT_REGISTRY_IP = "10.50.1.220"
+# MODIFIED: public OSS defaults — localhost only (no private lab RFC1918)
+DEFAULT_REGISTRY_IP = "127.0.0.1"
 DEFAULT_PROMETHEUS_URL = f"http://{DEFAULT_REGISTRY_IP}:9090"
 DEFAULT_LOKI_URL = f"http://{DEFAULT_REGISTRY_IP}:3100"
 

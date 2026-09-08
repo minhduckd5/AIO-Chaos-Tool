@@ -51,7 +51,7 @@ _EMPTY_SCENARIOS_MSG = (
     "(fallback incidents are not fed to chaos generation)."
 )
 
-_DEFAULT_EXPORT = Path(r"H:\Project\microservices-demo-1\local\observability-fetch\exports")
+_DEFAULT_EXPORT = Path("./exports")
 _COMPOSITE_WIDTH_BREAKPOINT = 1100
 _SETTINGS_ORG = "ChaosGen"
 _SETTINGS_APP = "AdvisorView"

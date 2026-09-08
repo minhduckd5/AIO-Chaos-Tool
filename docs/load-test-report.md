@@ -65,4 +65,4 @@ pip install -e ".[dev]"
 
 - [ ] At least one network latency scenario exercised (live or dry-run documented)
 - [ ] Metrics recorded in table above
-- [ ] G6.4 ticked in IT_PROJECT_PROPOSAL.md
+- [ ] G6.4 acceptance criteria documented in demo notes

@@ -5,11 +5,11 @@ hints:
   skip_auto_detect: true
   observability:
     - tool: prometheus
-      url: http://10.50.1.220:9090
+      url: http://127.0.0.1:9090
       auth:
         auth_type: none
     - tool: loki
-      url: http://10.50.1.220:3100
+      url: http://127.0.0.1:3100
       auth:
         auth_type: none
 

@@ -4,7 +4,7 @@ Auto-train: walk public-datasets/, discover trainable exports, produce one merge
 
 Usage:
     python scripts/auto_train.py
-    python scripts/auto_train.py --datasets-root H:/data/public-datasets
+    python scripts/auto_train.py --datasets-root ./data/public-datasets
     python scripts/auto_train.py --output models/merged.joblib --max-exports 5
     python scripts/auto_train.py --include-ext .csv,.json,.log
 

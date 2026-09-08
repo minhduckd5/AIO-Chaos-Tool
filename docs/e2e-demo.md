@@ -1,6 +1,6 @@
 # P6 E2E Demo Guide
 
-> Thesis defense demo — happy path + resilience beat. See [IT Project Proposal](IT_PROJECT_PROPOSAL.md) §7.3 G6.
+> End-to-end demo — happy path + resilience beat. See [Architecture](architecture.md) and [ADR telemetry packs](adr-telemetry-packs-form-first.md).
 
 ## Prerequisites
 

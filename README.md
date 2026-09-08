@@ -66,25 +66,25 @@ pip install -e ".[gui]"
 
 ### Telemetry: 3 ways (priority order)
 
-**Way 1 — Live stack (default)** — registry-vm `192.168.31.220`:
+**Way 1 — Live stack (default)** — your Prometheus/Loki (defaults to `127.0.0.1`):
 
 ```bash
-chaosgen config init          # choose registry-vm preset
+chaosgen config init          # optional local preset
 chaosgen analyze --check      # verify Prometheus + Loki
 chaosgen analyze              # live ingest + anomaly detection
 chaosgen generate             # uses same live endpoints
 ```
 
-Or copy `examples/registry-vm-settings.yaml` to your ChaosGen config path.
+Or copy `examples/registry-vm-settings.yaml` to your ChaosGen config path and set real URLs.
 
 **Way 2 — Offline export bundle:**
 
 ```bash
-chaosgen analyze --export H:/Project/microservices-demo-1/local/observability-fetch/exports
+chaosgen analyze --export <path-to-observability-export>
 chaosgen analyze --export <path> --generate --top-n 5
 ```
 
-**Way 3 — Re-fetch richer microservices data** (run on registry-vm network):
+**Way 3 — Re-fetch richer microservices data** (run on your lab network):
 
 ```powershell
 .\local\observability-fetch\fetch-observability-data.ps1 -Days 7
@@ -239,11 +239,11 @@ docker compose --profile dev run --rm chaosgen_dev pytest -q
 ## Documentation
 
 - **[Getting Started](docs/getting-started.md)** — Install, config paths, advisor-loop commands.
-- **[E2E Demo Guide](docs/e2e-demo.md)** — P6 thesis defense script (happy path + resilience beat).
+- **[E2E Demo Guide](docs/e2e-demo.md)** — End-to-end demo script (happy path + resilience beat).
 - **[Architecture](docs/architecture.md)** — Layers, packages, storage model (short summary).
 - **[Pipeline Framework](docs/pipeline-framework.md)** — Advisor research model mapped to ChaosGen modules.
-- **[Best Practices](docs/best-practices.md)** — Thesis-lab safety and gatekeeper interpretation.
-- **[IT Project Proposal](docs/IT_PROJECT_PROPOSAL.md)** — Full technical proposal for thesis defense / review.
+- **[Best Practices](docs/best-practices.md)** — Lab safety and gatekeeper interpretation.
+- **[Telemetry packs ADR](docs/adr-telemetry-packs-form-first.md)** — Dual-Mode Default packs vs Guided Custom Discovery.
 
 ## License
 

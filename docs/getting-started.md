@@ -228,5 +228,5 @@ produces zero experiments after filtering.
 1. [E2E Demo Guide](e2e-demo.md) — P6 thesis defense script (happy path + resilience)
 2. [Architecture summary](architecture.md) — layers, packages, storage model
 2. [Pipeline Framework](pipeline-framework.md) — advisor research model → code mapping
-3. [IT Project Proposal](IT_PROJECT_PROPOSAL.md) — thesis defense depth
+3. [Architecture](architecture.md) — system layers and package map
 4. [Best Practices](best-practices.md) — lab safety and operator discipline

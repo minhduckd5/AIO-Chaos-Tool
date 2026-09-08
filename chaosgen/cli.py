@@ -1688,7 +1688,7 @@ def config_init():
 
     click.secho("\n[ChaosGen Config Wizard]\n", bold=True)
 
-    if click.confirm("Use registry-vm preset (192.168.31.220)?", default=True):
+    if click.confirm("Use local observability preset (127.0.0.1 Prometheus/Loki)?", default=True):
         from chaosgen.config.telemetry_endpoints import DEFAULT_LOKI_URL, DEFAULT_PROMETHEUS_URL
         settings = ChaosGenSettings(
             hints=UserHints(

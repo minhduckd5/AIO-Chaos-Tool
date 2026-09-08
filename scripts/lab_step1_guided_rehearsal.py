@@ -14,9 +14,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-PROM = "http://10.50.1.220:9090"
-LOKI = "http://10.50.1.220:3100"
-NS = "default"
+PROM = os.environ.get("CHAOSGEN_PROM_URL", "http://127.0.0.1:9090")
+LOKI = os.environ.get("CHAOSGEN_LOKI_URL", "http://127.0.0.1:3100")
+NS = os.environ.get("CHAOSGEN_NAMESPACE", "default")
 SETTINGS = Path.home() / ".config" / "chaosgen" / "settings.yaml"
 
 

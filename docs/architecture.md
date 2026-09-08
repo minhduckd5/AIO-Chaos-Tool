@@ -1,7 +1,7 @@
 # ChaosGen Architecture (Summary)
 
 > **Thesis prototype** — see [Pipeline Framework](pipeline-framework.md) for the advisor
-> research model and [IT Project Proposal](IT_PROJECT_PROPOSAL.md) for full technical depth.
+> research model. See [Architecture](architecture.md) and ADRs under `docs/adr-*.md` for technical depth.
 
 ChaosGen is a **pipeline-oriented Python monolith** (`chaosgen` package): CLI + PySide6 GUI
 over a shared advisor orchestrator, HITL execution, and six chaos-tool adapters. Hybrid

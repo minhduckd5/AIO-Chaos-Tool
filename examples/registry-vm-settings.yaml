@@ -1,8 +1,8 @@
-# ChaosGen settings — microservices-demo registry-vm live stack (Phase 2 aligned)
+# ChaosGen settings — example live stack profile (Phase 2 aligned)
 # Copy to ~/.config/chaosgen/settings.yaml or pass:
 #   chaosgen analyze --config examples/registry-vm-settings.yaml
 #
-# Observability stack: registry-vm @ 10.50.1.220 (microservices-demo-1 Sprint A–C)
+# Replace observability URLs with YOUR Prometheus/Loki endpoints.
 # Golden signals: form-first pack `boutique` (chaosgen/telemetry/packs/boutique.yaml)
 
 hints:
@@ -11,11 +11,11 @@ hints:
   skip_auto_detect: true
   observability:
     - tool: prometheus
-      url: http://10.50.1.220:9090
+      url: http://127.0.0.1:9090
       auth:
         auth_type: none
     - tool: loki
-      url: http://10.50.1.220:3100
+      url: http://127.0.0.1:3100
       auth:
         auth_type: none
 
@@ -92,7 +92,7 @@ inject:
   ssh_bastion:
     enabled: false
     auto_on_api_fail: true
-    host: 10.50.1.210
+    host: 127.0.0.1
     user: vagrant
     remote_api_host: 127.0.0.1
     remote_api_port: 6443

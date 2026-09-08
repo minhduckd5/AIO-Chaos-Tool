@@ -24,7 +24,7 @@ def test_peek_cluster_server(tmp_path):
                 "clusters": [
                     {
                         "name": "k3s",
-                        "cluster": {"server": "https://192.168.31.220:6443"},
+                        "cluster": {"server": "https://192.0.2.10:6443"},
                     }
                 ],
                 "users": [{"name": "u", "user": {"token": "x"}}],
@@ -32,13 +32,13 @@ def test_peek_cluster_server(tmp_path):
         ),
         encoding="utf-8",
     )
-    assert peek_cluster_server(str(kube), None) == "https://192.168.31.220:6443"
-    assert peek_cluster_server(str(kube), "lab") == "https://192.168.31.220:6443"
+    assert peek_cluster_server(str(kube), None) == "https://192.0.2.10:6443"
+    assert peek_cluster_server(str(kube), "lab") == "https://192.0.2.10:6443"
 
 
 def test_bastion_build_cmd():
     tunnel = SshBastionTunnel(
-        host="192.168.31.220",
+        host="192.0.2.10",
         user="root",
         identity_file=None,
         remote_api_host="127.0.0.1",
@@ -49,7 +49,7 @@ def test_bastion_build_cmd():
     assert cmd[0] == "ssh"
     assert "-L" in cmd
     assert "16443:127.0.0.1:6443" in cmd
-    assert "root@192.168.31.220" in cmd
+    assert "root@192.0.2.10" in cmd
     assert "BatchMode=yes" in cmd
 
 
@@ -123,7 +123,7 @@ inject:
   client: native
   ssh_bastion:
     enabled: true
-    host: 192.168.31.220
+    host: 192.0.2.10
     user: root
     remote_api_port: 6443
 """,
@@ -131,7 +131,7 @@ inject:
     )
     settings = load_settings(path=str(path))
     assert settings.inject.client == "native"
-    assert settings.inject.ssh_bastion.host == "192.168.31.220"
+    assert settings.inject.ssh_bastion.host == "192.0.2.10"
     assert settings.inject.ssh_bastion.user == "root"
 
 
