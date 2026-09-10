@@ -9,8 +9,9 @@ history layer.
 Hardening (all dependency-free):
 - Atomic writes: serialize to a temp file, fsync, then ``os.replace`` so a crash
   mid-write never corrupts the live file.
-- Concurrency: an in-process lock plus an advisory cross-process lockfile guard
-  the read-merge-write cycle so two CLIs/GUIs promoting at once cannot lose data.
+- Concurrency: an in-process lock plus an exclusive cross-process lockfile (never
+  proceeds unlocked) guard the read-merge-write cycle; ``replace_with_retry``
+  absorbs Windows sharing/permission races on ``os.replace``.
 - Versioned envelope: ``{"schema_version": ..., "scenarios": [...]}`` so future
   schema changes can migrate old files instead of crashing on load.
 - Recovery: a corrupt file is quarantined and the ``.bak`` is tried before the
@@ -42,6 +43,11 @@ from chaosgen.schemas.faults import (
     NetworkFaultSpec,
     ProcessFaultSpec,
     ResourceFaultSpec,
+)
+from chaosgen.storage.atomic_io import (
+    ExclusiveFileLock,
+    read_text_with_retry,
+    replace_with_retry,
 )
 
 logger = logging.getLogger(__name__)
@@ -149,7 +155,9 @@ class PromotedStore:
         if not self.path.exists():
             return []
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            # MODIFIED: transient Windows sharing races are not corruption —
+            # retry before letting the caller fall back to the .bak file.
+            raw = json.loads(read_text_with_retry(self.path))
         except (json.JSONDecodeError, OSError) as exc:
             raise PromotedStoreError(f"cannot read promoted store: {exc}") from exc
         return self._parse(raw)
@@ -185,7 +193,7 @@ class PromotedStore:
             try:
                 if not self.path.exists():
                     return []
-                raw = json.loads(self.path.read_text(encoding="utf-8"))
+                raw = json.loads(read_text_with_retry(self.path))
                 return self._parse(raw)
             except (json.JSONDecodeError, PromotedStoreError) as exc:
                 last_exc = exc
@@ -240,18 +248,25 @@ class PromotedStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(dir=str(self.path.parent), suffix=".tmp")
         tmp_path = Path(tmp_name)
+        replaced = False
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(envelope, handle, indent=2)
                 handle.flush()
                 os.fsync(handle.fileno())
-            # Rotate the current good file to .bak before replacing it.
+            # --- START MODIFICATION ---
+            # Windows-safe replace retries; never skip the exclusive lock.
+            # --- END MODIFICATION ---
             if self.path.exists():
                 shutil.copy2(self.path, self.bak_path)
-            os.replace(tmp_path, self.path)
+            replace_with_retry(tmp_path, self.path)
+            replaced = True
         finally:
-            if tmp_path.exists():
-                tmp_path.unlink()
+            if not replaced and tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
 
     # -- recovery ----------------------------------------------------------
 
@@ -262,7 +277,7 @@ class PromotedStore:
                 f"{self.path.name}.corrupt.{int(time.time())}"
             )
             try:
-                os.replace(self.path, corrupt_path)
+                replace_with_retry(self.path, corrupt_path)
                 logger.warning("Quarantined corrupt promoted store -> %s", corrupt_path)
             except OSError as exc:
                 logger.error("Could not quarantine corrupt store: %s", exc)
@@ -285,45 +300,10 @@ class PromotedStore:
 
     # -- locking -----------------------------------------------------------
 
-    class _FileLockGuard:
-        def __init__(self, lock_path: Path, timeout: float, poll: float) -> None:
-            self._lock_path = lock_path
-            self._timeout = timeout
-            self._poll = poll
-            self._fd: int | None = None
-
-        def __enter__(self) -> "PromotedStore._FileLockGuard":
-            deadline = time.monotonic() + self._timeout
-            while True:
-                try:
-                    self._fd = os.open(
-                        str(self._lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR
-                    )
-                    os.write(self._fd, str(os.getpid()).encode("ascii"))
-                    return self
-                except FileExistsError:
-                    if time.monotonic() >= deadline:
-                        # Stale lock or heavy contention: proceed rather than
-                        # hard-fail. The in-process lock still serializes threads.
-                        logger.warning(
-                            "Promoted store lock %s busy after %.1fs; proceeding",
-                            self._lock_path, self._timeout,
-                        )
-                        return self
-                    time.sleep(self._poll)
-
-        def __exit__(self, *exc: Any) -> None:
-            if self._fd is not None:
-                os.close(self._fd)
-                self._fd = None
-            try:
-                self._lock_path.unlink()
-            except OSError:
-                pass
-
-    def _file_lock(self, timeout: float = 10.0, poll: float = 0.05) -> "PromotedStore._FileLockGuard":
+    def _file_lock(self, timeout: float = 30.0, poll: float = 0.05) -> ExclusiveFileLock:
+        # MODIFIED: never proceed unlocked (was the cross-process lost-write hazard)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        return self._FileLockGuard(self.lock_path, timeout, poll)
+        return ExclusiveFileLock(self.lock_path, timeout=timeout, poll=poll)
 
 
 # ---------------------------------------------------------------------------

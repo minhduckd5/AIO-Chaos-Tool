@@ -161,7 +161,8 @@ def test_builder_action_pause_on_second_target():
         max_actions=3,
     )
     exp = build_experiment_from_intent(intent)
-    assert exp.method[1].pauses == {"after": "5s"}
+    # CTK Open API: pauses.after MUST be a JSON number (seconds), not a duration string.
+    assert exp.method[1].pauses == {"after": 5}
 
 
 def test_builder_network_rollbacks_when_enabled():

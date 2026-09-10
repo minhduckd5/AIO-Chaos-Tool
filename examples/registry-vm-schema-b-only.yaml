@@ -30,7 +30,7 @@ anomaly:
 features:
   rolling_window_seconds: 300
   resample_step_seconds: 60
-  zscore_threshold: 3.0
+  zscore_threshold: 5.0
   canonical_enabled: true
   canonical_rules_path: examples/canonical_features.yaml
 

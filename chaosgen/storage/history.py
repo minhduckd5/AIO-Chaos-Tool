@@ -107,10 +107,31 @@ _CREATE_STATEMENTS = [
         updated_at TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS audit_events (
+        event_id            TEXT PRIMARY KEY,
+        schema_version      INTEGER NOT NULL DEFAULT 1,
+        timestamp           TEXT NOT NULL,
+        actor               TEXT NOT NULL,
+        event_type          TEXT NOT NULL,
+        path_used           TEXT NOT NULL,
+        run_id              TEXT,
+        experiment_name     TEXT,
+        blast_radius_json   TEXT,
+        criteria_path       TEXT,
+        criteria_sha256     TEXT,
+        target_context_json TEXT,
+        outcome             TEXT,
+        notes               TEXT
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_incidents_run ON incidents(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_incidents_service_pattern ON incidents(service_target, error_pattern)",
     "CREATE INDEX IF NOT EXISTS idx_experiments_ran_at ON experiments(ran_at)",
     "CREATE INDEX IF NOT EXISTS idx_descriptions_run ON descriptions(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(timestamp)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_path ON audit_events(path_used)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_events(actor)",
 ]
 
 
@@ -292,6 +313,67 @@ class HistoryStore:
                     (filtered_noise_count, report_path, run_id),
                 )
                 conn.commit()
+            finally:
+                conn.close()
+
+    def record_audit_event(self, record: Dict[str, Any]) -> None:
+        """
+        Mirror one audit event for analytics queries (P1).
+
+        The JSONL file written by :class:`chaosgen.storage.audit.AuditStore` is
+        the source of truth; this table is a queryable copy. Callers treat
+        failures here as warnings and never roll back the JSONL line.
+        """
+        blast = record.get("blast_radius_ref")
+        criteria = record.get("criteria_ref") or {}
+        context = record.get("target_cluster_context")
+        with self._lock:
+            conn = self._open()
+            try:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO audit_events (
+                        event_id, schema_version, timestamp, actor, event_type,
+                        path_used, run_id, experiment_name, blast_radius_json,
+                        criteria_path, criteria_sha256, target_context_json,
+                        outcome, notes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record["event_id"],
+                        int(record.get("schema_version") or 1),
+                        record["timestamp"],
+                        record["actor"],
+                        record["event_type"],
+                        record["path_used"],
+                        record.get("run_id"),
+                        record.get("experiment_name"),
+                        json.dumps(blast) if blast else None,
+                        criteria.get("path"),
+                        criteria.get("sha256"),
+                        json.dumps(context) if context else None,
+                        record.get("outcome"),
+                        record.get("notes"),
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def audit_events(self, *, limit: int = 200) -> List[Dict[str, Any]]:
+        """Read mirrored audit events, newest first (analytics only)."""
+        with self._lock:
+            conn = self._open()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM audit_events
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                    """,
+                    (int(limit),),
+                ).fetchall()
+                return [dict(row) for row in rows]
             finally:
                 conn.close()
 

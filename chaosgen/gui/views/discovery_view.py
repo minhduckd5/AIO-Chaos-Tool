@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from chaosgen.gui.theme import Colors, qss_color
+
 logger = logging.getLogger(__name__)
 
 
@@ -178,7 +180,10 @@ class DiscoveryView(QWidget):
         lbl: QLabel = card.property("_value_label")
         if lbl:
             lbl.setText(value)
-            lbl.setStyleSheet("color: #4ade80;" if ok else "color: #f87171;")
+            # MODIFIED: semantic status tokens (not ACCENT)
+            lbl.setStyleSheet(
+                qss_color(Colors.STATUS_OK if ok else Colors.STATUS_ERROR)
+            )
 
     # ------------------------------------------------------------------
     # Slots
@@ -275,7 +280,8 @@ class DiscoveryView(QWidget):
 
         if warning_texts:
             self._warnings_label.setText("\n".join(warning_texts))
-            self._warnings_label.setStyleSheet("color: #fbbf24;")
+            # MODIFIED: STATUS_WARN token (not ACCENT / not raw hex)
+            self._warnings_label.setStyleSheet(qss_color(Colors.STATUS_WARN))
             self._warnings_group.setVisible(True)
 
         # --- Service map ---

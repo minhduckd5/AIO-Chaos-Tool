@@ -59,6 +59,8 @@ _NON_SERVICE_TOKENS = frozenset({
     "errors", "request", "request_rate", "error_rate", "error_ratio",
     "availability", "saturation", "log_volume", "log_error_rate",
     "mean", "std", "roc", "p95", "p99", "unknown",
+    # MODIFIED: reserved entity for label-less series (entity-keyed layout)
+    "_system",
 })
 
 
@@ -298,6 +300,14 @@ def apply_canonical_features(
 ) -> pd.DataFrame:
     """Apply canonical mapping when enabled in FeatureSettings."""
     if settings is None or not getattr(settings, "canonical_enabled", False):
+        return raw_df
+    # MODIFIED: entity-keyed columns are already fixed and service-free; pooling
+    # them again only loses resolution.
+    if isinstance(raw_df.index, pd.MultiIndex) and "service" in list(raw_df.index.names or []):
+        logger.warning(
+            "canonical_enabled=true is redundant under the entity-keyed feature "
+            "layout; skipping canonical pooling to preserve the fixed schema"
+        )
         return raw_df
     mapper = CanonicalFeatureMapper.from_settings(settings)
     if mapper is None:

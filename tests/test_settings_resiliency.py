@@ -31,7 +31,7 @@ def test_settings_resiliency_malformed_yaml():
         settings = load_settings(path=str(settings_file))
         assert isinstance(settings, ChaosGenSettings)
         # Should have fallback default values
-        assert settings.features.zscore_threshold == 3.0
+        assert settings.features.zscore_threshold == 5.0
         assert settings.anomaly.clustering_mode == "auto"
 
 
@@ -45,7 +45,7 @@ def test_settings_resiliency_invalid_pydantic_values():
         settings = load_settings(path=str(settings_file))
         assert isinstance(settings, ChaosGenSettings)
         # Should drop back to defaults on validation failure
-        assert settings.features.zscore_threshold == 3.0
+        assert settings.features.zscore_threshold == 5.0
 
 
 def test_ranker_weight_normalization_even_weights():

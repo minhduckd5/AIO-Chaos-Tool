@@ -43,6 +43,8 @@ _METRIC_ERROR_TOKENS = (
     "5xx",
     "custom__error",
     "canonical__errors",
+    # MODIFIED: entity-keyed signal stems (service lives in the row index)
+    "span_error",
 )
 
 

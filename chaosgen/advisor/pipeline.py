@@ -149,6 +149,20 @@ def run_advisor_pipeline(
         logger.warning(
             "skip_gatekeeper=True: bypassing incident gatekeeper (debug only)"
         )
+        # A3: gatekeeper bypass is an analysis-stage hatch — it implies no
+        # inject, so the chain stops at hatch_used.
+        from chaosgen.storage.audit import emit_best_effort
+
+        emit_best_effort(
+            event_type="hatch_used",
+            path_used="skip_gatekeeper",
+            settings=settings,
+            history_store=store,
+            notes=(
+                f"gatekeeper bypass; analysis_run_id={run_id}, "
+                f"lookback_hours={lookback_hours}"
+            ),
+        )
         candidates = _bypass_candidates(clusters, summaries, lookback_hours)
         dropped_noise = 0
     else:

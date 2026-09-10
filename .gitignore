@@ -68,8 +68,8 @@ instance/
 # Scrapy stuff:
 .scrapy
 
-# Sphinx documentation
-docs/_build/
+# Local knowledge base (thesis drafts, lab notes, personal/academic) — publish when complete
+docs/
 
 # PyBuilder
 .pybuilder/
@@ -215,9 +215,6 @@ __marimo__/
 # Copilot instructions
 .github/copilot-instructions.md
 
-# Thesis-only local assets (advisor hand-drawn sketch — not for the public repo)
-docs/assets/advisor-workflow.png
-
 # ChaosGen runtime artifacts (may contain telemetry / incident data)
 history.db
 history.db-wal
@@ -230,9 +227,6 @@ demo-report-resilience.json
 .chaosgen/
 settings.local.yaml
 *.local.yaml
-
-# Local draft documents
-docs/drafts/
 
 .thesis/
 # Trained ML baselines (local lab artifacts) — keep directory via .gitkeep
@@ -260,30 +254,14 @@ scratch/ctk/journals/
 serverless-boundary-*.json
 
 # --- Privacy / academic / personal (NOT for public OSS) ---
-# Thesis registration, board proposals, personal academic drafts
-docs/thesis-registration-form*.md
-docs/IT_PROJECT_PROPOSAL.md
-docs/**/*registration*
-docs/**/*Registration*
+# Full docs/ is ignored above; keep these for paths outside docs/
 **/*Thesis*.pdf
 **/*_Thesis.pdf
 **/NguyenHuynh*
 **/*CSIU*
 **/*ITCSIU*
 .thesis/
-docs/drafts/
-docs/private/
 private/
-
-# Local machine fingerprints & lab run dumps (absolute paths, private IPs, journals)
-docs/anomaly-verdict-alignment-*.json
-docs/flagship-alignment-comparison-live.json
-docs/demo-alignment/**/*.json
-docs/modular-monolith-*-report.json
-docs/modular-monolith-live-fire.json
-docs/modular-monolith-verdict-*.json
-docs/multi-arch-matrix-report.json
-docs/advisor-data-and-dataset-findings.pdf
 
 # Operator-local settings with real lab endpoints (copy from examples/*.yaml)
 examples/*-local.yaml
@@ -313,12 +291,10 @@ chaostoolkit.log
 journal.json
 experiment.json
 
-# Generated diagram visual-check screenshots & harness (keep source JSON/HTML intentionally)
+# Generated diagram visual-check screenshots & harness
 **/visual-check*.png
 **/visual-check*.html
 **/visual-check*.json
-docs/diagrams/*.visual-check.*
-docs/archify/*.visual-check.*
 
 # Local secrets / operator overrides (never commit real tokens)
 .env.*

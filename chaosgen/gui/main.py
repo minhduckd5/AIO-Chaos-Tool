@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, QTimer, QSize
 from PySide6.QtGui import QIcon, QColor
 from PySide6.QtWidgets import (
     QApplication, QWidget, QHBoxLayout, QVBoxLayout,
-    QStackedWidget, QLabel, QSizePolicy,
+    QStackedWidget, QLabel, QSizePolicy, QInputDialog, QMessageBox,
 )
 
 from qfluentwidgets import (
@@ -287,6 +287,28 @@ class MainWindow(QWidget):
         self.controller.experiment_finished.connect(
             lambda ok, msg: self._log_console.append_log(f"Experiment {'passed' if ok else 'failed'}: {msg}")
         )
+        # --- START MODIFICATION ---
+        # A8: operator identity is asked once, then persisted. A cancelled
+        # prompt blocks the action with a dialog instead of crashing the app.
+        self.controller.set_actor_prompt(self._prompt_operator_name)
+        self.controller.audit_actor_required.connect(self._on_audit_actor_required)
+        # --- END MODIFICATION ---
+
+    def _prompt_operator_name(self):
+        name, ok = QInputDialog.getText(
+            self,
+            "Operator identity required",
+            "Enter operator name for the audit trail:",
+        )
+        return name if ok else None
+
+    def _on_audit_actor_required(self, message: str):
+        QMessageBox.warning(
+            self,
+            "Operator name required",
+            "Enter operator name before continuing.\n\n" + message,
+        )
+        self._log_console.append_log(f"Action blocked: {message}")
 
     def _init_status_polling(self):
         self._poll_timer = QTimer(self)

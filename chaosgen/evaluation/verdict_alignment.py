@@ -26,6 +26,7 @@ from chaosgen.evaluation.run_telemetry import (
 )
 from chaosgen.ml.anomaly_detector import AnomalyDetector
 from chaosgen.ml.canonical_features import apply_canonical_features
+from chaosgen.ml.feature_engineering import FeatureLayoutMismatchError
 from chaosgen.ml.feature_engineering import FeatureEngineer
 from chaosgen.schemas.experiment_run import ExperimentRunRecord
 from chaosgen.schemas.scenarios import AnomalySeverity, ExperimentVerdict
@@ -130,7 +131,9 @@ def _build_detector(
     detector = AnomalyDetector(settings=settings.anomaly)
     resolved = _resolve_model_path(model_path, settings)
     if resolved:
-        detector.load_model(str(resolved))
+        # MODIFIED: layout is validated at scoring time (score_features_window),
+        # which refits on mismatch and records the reason as a warning.
+        detector.load_model(str(resolved), expected_layout=None)
         return detector, resolved, warnings
 
     warnings.append(
@@ -153,7 +156,16 @@ def score_features_window(
 
     work = features
     if detector._is_fitted and detector._feature_names:
-        work = detector._align_for_inference(features)
+        # MODIFIED: a layout mismatch means the persisted model cannot score this
+        # window; fall back to an unsupervised refit instead of failing the run.
+        try:
+            work = detector._align_for_inference(features)
+        except FeatureLayoutMismatchError as exc:
+            warnings.append(str(exc))
+            detector._is_fitted = False
+            detector._feature_names = []
+            detector.feature_layout = None
+            work = features
 
     if not detector._is_fitted:
         if not refit_if_unfitted:

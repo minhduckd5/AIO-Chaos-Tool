@@ -101,6 +101,17 @@ class ChaosOrchestrator:
         self.pending_report: Optional[AdvisorReport] = None
 
         # --- START MODIFICATION ---
+        # P1 audit trail: emit-only hooks. Audit failures must never change
+        # chaos flow, so every emit is best-effort (see _audit_emit).
+        self.audit_store = None
+        self._audit_actor: Optional[str] = None
+        self._audit_path: str = "operator_direct"
+        self._audit_path_override: Optional[str] = None
+        self._audit_warned: bool = False
+        self._injecting: bool = False
+        # --- END MODIFICATION ---
+
+        # --- START MODIFICATION ---
         # Form-first inject: operator environment overrides hint/auto-detect
         # --- END MODIFICATION ---
 
@@ -410,7 +421,29 @@ class ChaosOrchestrator:
         if ctx:
             os.environ.setdefault("KUBERNETES_CONTEXT", ctx)
 
+        # A2: CTK is the canonical runtime for operator-driven runs — same
+        # hatch_used -> inject_started -> inject_finished trio as run_experiment.
+        from chaosgen.storage.audit import TargetClusterContext
+
+        ctk_context = TargetClusterContext(
+            kube_context=ctx,
+            kube_namespace=(inj.default_namespace if inj else None),
+            environment_hint="kubernetes",
+        )
+        self._audit_path = "operator_direct"
+        self._run_id = str(uuid.uuid4())
+        self._audit_emit(
+            "hatch_used", path_used="operator_direct", experiment_name=title
+        )
+        self._audit_emit(
+            "inject_started",
+            path_used="operator_direct",
+            experiment_name=title,
+            target_cluster_context=ctk_context,
+        )
+
         self._ctk_run_active = True
+        self._injecting = True
         try:
             result = mod.execute(
                 "run_experiment",
@@ -418,6 +451,15 @@ class ChaosOrchestrator:
             )
         finally:
             self._ctk_run_active = False
+            self._injecting = False
+
+        self._audit_emit(
+            "inject_finished",
+            path_used="operator_direct",
+            experiment_name=title,
+            target_cluster_context=ctk_context,
+            outcome=self._outcome_from_result({**result, "dry_run": use_dry}),
+        )
 
         result["experiment_path"] = str(exp_path)
         result["ctk_title"] = title
@@ -517,16 +559,157 @@ class ChaosOrchestrator:
             List of module names
         """
         return list(self.modules.keys())
-    
+
+    # --- START MODIFICATION ---
+    # P1 audit trail (docs/audit-log-schema-proposal.md)
+    # --- END MODIFICATION ---
+
+    def set_audit_context(
+        self,
+        *,
+        actor: Optional[str] = None,
+        path_used: Optional[str] = None,
+        audit_store=None,
+    ) -> None:
+        """
+        Bind operator identity and entry path for audit emission.
+
+        ``path_used`` set here overrides the path inferred from the entry point
+        (used by ``chaosgen run --approve-all --force``, A4).
+        """
+        if actor is not None:
+            self._audit_actor = actor.strip() or None
+        if path_used is not None:
+            self._audit_path_override = path_used or None
+        if audit_store is not None:
+            self.audit_store = audit_store
+
+    def _get_audit_store(self):
+        if self.audit_store is None:
+            from chaosgen.storage.audit import AuditStore
+
+            self.audit_store = AuditStore(history_store=self.history_store)
+        return self.audit_store
+
+    def _resolve_audit_actor(self) -> Optional[str]:
+        """Configured operator only — never prompt or fabricate here (A8)."""
+        if self._audit_actor:
+            return self._audit_actor
+        from chaosgen.storage.audit import AuditActorRequired, resolve_actor
+
+        try:
+            self._audit_actor = resolve_actor(settings=self._cg_settings)
+        except AuditActorRequired:
+            return None
+        return self._audit_actor
+
+    def _audit_emit(self, event_type: str, **fields: Any) -> None:
+        """Best-effort audit emit; a broken audit path never blocks chaos flow."""
+        actor = self._resolve_audit_actor()
+        if not actor:
+            if not self._audit_warned:
+                self._audit_warned = True
+                self.logger.warning(
+                    "Audit event %s not recorded: no operator_name configured "
+                    "(set it via `chaosgen config set-operator <name>`)",
+                    event_type,
+                )
+            return
+
+        fields.setdefault("path_used", self._audit_path_override or self._audit_path)
+        fields.setdefault("run_id", self._run_id)
+        if "experiment_name" not in fields and self.current_experiment is not None:
+            fields["experiment_name"] = self.current_experiment.name
+        try:
+            self._get_audit_store().emit(
+                event_type=event_type, actor=actor, **fields
+            )
+        except Exception as exc:
+            self.logger.warning("Audit emit failed for %s: %s", event_type, exc)
+
+    def _audit_target_context(self):
+        """Resolve where an inject is aimed — evidence for A5."""
+        from chaosgen.storage.audit import TargetClusterContext
+
+        inject = getattr(self._cg_settings, "inject", None) if self._cg_settings else None
+        connect = getattr(self._cg_settings, "connect", None) if self._cg_settings else None
+        hints = getattr(self._cg_settings, "hints", None) if self._cg_settings else None
+
+        kube_context = (inject.context if inject else None) or (
+            connect.kubernetes.context if connect else None
+        )
+        namespace = None
+        if self.current_experiment is not None and self.current_experiment.target:
+            namespace = self.current_experiment.target.namespace
+        if not namespace and inject:
+            namespace = inject.default_namespace
+        docker_host = connect.docker.host if connect else None
+        environment = getattr(hints, "environment", None) if hints else None
+        environment_hint = (
+            environment.value if hasattr(environment, "value") else environment
+        )
+        return TargetClusterContext(
+            kube_context=kube_context,
+            kube_namespace=namespace,
+            docker_host=docker_host,
+            environment_hint=environment_hint,
+        )
+
+    def _audit_blast_radius_ref(self, *, validation_ok: bool):
+        from chaosgen.storage.audit import BlastRadiusRef
+
+        policy = getattr(self.blast_radius_controller, "policy", None)
+        namespaces: List[str] = []
+        if self.current_experiment is not None and self.current_experiment.target:
+            ns = self.current_experiment.target.namespace
+            if ns:
+                namespaces.append(ns)
+        return BlastRadiusRef(
+            namespaces=namespaces,
+            blocked_namespaces=list(getattr(policy, "blocked_namespaces", []) or []),
+            validation_ok=validation_ok,
+        )
+
     def execute_action(self, module_name: str, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Direct execution of a module action (Legacy/Direct Mode)."""
         module = self.get_module(module_name)
         if not module:
             return {'success': False, 'error': f'Module not found: {module_name}'}
+
+        # A7: direct module calls are the highest-risk hatch. Calls made from
+        # inside _execute_injection already belong to the FSM inject chain.
+        external = not self._injecting
+        label = f"{module_name}.{action}"
+        if external:
+            self._audit_emit(
+                "hatch_used", path_used="module_direct", notes=label
+            )
+            self._audit_emit(
+                "inject_started",
+                path_used="module_direct",
+                notes=label,
+                target_cluster_context=self._audit_target_context(),
+            )
         try:
-            return module.execute(action, params)
+            result = module.execute(action, params)
         except Exception as e:
-            return {'success': False, 'error': str(e)}
+            result = {'success': False, 'error': str(e)}
+        if external:
+            self._audit_emit(
+                "inject_finished",
+                path_used="module_direct",
+                notes=label,
+                outcome=self._outcome_from_result(result),
+            )
+        return result
+
+    @staticmethod
+    def _outcome_from_result(result: Dict[str, Any]) -> str:
+        if result.get("aborted") or result.get("timeout"):
+            return "aborted"
+        if result.get("dry_run"):
+            return "dry_run"
+        return "success" if result.get("success") else "failure"
 
     # --- State Machine Callbacks ---
 
@@ -545,6 +728,9 @@ class ChaosOrchestrator:
         if not self._run_id:
             self._run_id = str(uuid.uuid4())
         self.logger.info("Starting experiment: %s (run_id=%s)", experiment.name, self._run_id)
+        # A2: direct run is an intentional operator hatch (no AI HITL gate).
+        self._audit_path = "operator_direct"
+        self._audit_emit("hatch_used", path_used="operator_direct")
         self.start_experiment()
 
     def run_experiment_suite(
@@ -584,6 +770,13 @@ class ChaosOrchestrator:
             len(experiments),
             self._run_id,
             delay_seconds,
+        )
+        self._audit_path = "operator_direct"
+        self._audit_emit(
+            "hatch_used",
+            path_used="operator_direct",
+            experiment_name=experiments[0].name,
+            notes=f"suite entry: {len(experiments)} target(s)",
         )
 
         try:
@@ -766,14 +959,48 @@ class ChaosOrchestrator:
         except ValueError as e:
             self.logger.error("Safety Policy Violation at inject: %s", e)
             self.last_outcome = "FAIL"
+            self._audit_emit(
+                "inject_started",
+                outcome="blocked",
+                blast_radius_ref=self._audit_blast_radius_ref(validation_ok=False),
+                notes=f"blocked: blast radius violation ({e})",
+            )
             self.trigger_rollback()
             return
         # --- END MODIFICATION ---
+
+        # --- START MODIFICATION ---
+        # A5: an inject we cannot attribute to a target scope is rejected —
+        # "not prod" must be provable, not assumed.
+        context = self._audit_target_context()
+        if not context.is_resolvable():
+            self.logger.error(
+                "Inject rejected: target cluster context unresolvable "
+                "(no kube context/namespace, docker host, or environment hint)"
+            )
+            self.last_outcome = "FAIL"
+            self._audit_emit(
+                "inject_started",
+                outcome="blocked",
+                target_cluster_context=context,
+                notes="blocked: unresolvable target_cluster_context (A5)",
+            )
+            self.trigger_rollback()
+            return
+        # --- END MODIFICATION ---
+
+        inject = self._cg_settings.inject if self._cg_settings else None
+        self._audit_emit(
+            "inject_started",
+            target_cluster_context=context,
+            blast_radius_ref=self._audit_blast_radius_ref(validation_ok=True),
+        )
+        self._injecting = True
+        finished_emitted = False
         try:
             plans = self.translator.translate(self.current_experiment)
             self.active_plans = plans
             writer = None
-            inject = self._cg_settings.inject if self._cg_settings else None
 
             for plan in plans:
                 params = dict(plan.params)
@@ -821,6 +1048,17 @@ class ChaosOrchestrator:
                     self.last_outcome = "PARTIAL"
                     if result.get("timeout") or "timeout" in str(result.get("error", "")).lower():
                         self.last_outcome = "INCONCLUSIVE"
+                    self._injecting = False
+                    self._audit_emit(
+                        "inject_finished",
+                        target_cluster_context=context,
+                        outcome=(
+                            "aborted"
+                            if self.last_outcome == "INCONCLUSIVE"
+                            else "failure"
+                        ),
+                        notes=f"{plan.tool_name}.{plan.action} failed",
+                    )
                     self.trigger_rollback()
                     return
 
@@ -836,12 +1074,31 @@ class ChaosOrchestrator:
                 self.logger.info("Waiting %ss for chaos window...", wait_s)
                 time.sleep(wait_s)
 
+            self._injecting = False
+            self._audit_emit(
+                "inject_finished",
+                target_cluster_context=context,
+                outcome="dry_run" if (inject and inject.dry_run) else "success",
+            )
+            finished_emitted = True
             self.injection_complete()
 
         except Exception as e:
             self.logger.error("Injection error: %s", e)
             self.last_outcome = "PARTIAL"
+            self._injecting = False
+            # Verification runs inside injection_complete(); do not emit a
+            # second terminal row if the inject itself already finished.
+            if not finished_emitted:
+                self._audit_emit(
+                    "inject_finished",
+                    target_cluster_context=context,
+                    outcome="failure",
+                    notes=f"injection error: {e}",
+                )
             self.trigger_rollback()
+        finally:
+            self._injecting = False
 
     def _run_verification(self):
         """Verify expectations after chaos — operational verdict (P0-B)."""
@@ -1005,6 +1262,11 @@ class ChaosOrchestrator:
         status = self._rollback_manifests(best_effort=False)
         if status != "pass" and not self.last_outcome:
             self.last_outcome = "PARTIAL"
+        self._audit_emit(
+            "rollback",
+            outcome="success" if status == "pass" else "failure",
+            notes=f"rollback status={status}",
+        )
         self.rollback_complete()
 
     def inject_gc(self) -> Dict[str, Any]:
@@ -1049,6 +1311,14 @@ class ChaosOrchestrator:
             "Submitted %d AI-generated experiments for approval.",
             len(self.pending_experiments),
         )
+        # A1: AI-generated experiments only ever enter the queue here.
+        self._audit_path = "ai_hitl"
+        self._audit_emit(
+            "queued",
+            path_used=self._audit_path_override or "ai_hitl",
+            experiment_name=self.pending_experiments[0].name,
+            notes=f"{len(self.pending_experiments)} experiment(s) awaiting approval",
+        )
         self.submit_for_approval()
 
     def approve_and_run(self, experiment_index: int = 0) -> None:
@@ -1066,12 +1336,28 @@ class ChaosOrchestrator:
             self.current_experiment.name
         )
         self.logger.info("Approved experiment: %s", self.current_experiment.name)
+        # A1/A4: the approval decision is its own audit row; inject events that
+        # follow carry the same run_id.
+        self._audit_path = "ai_hitl"
+        if not self._run_id:
+            self._run_id = str(uuid.uuid4())
+        self._audit_emit("approved")
         self.approve_experiment()
 
     def reject_all(self) -> None:
         """Reject all pending experiments and return to idle."""
         if self.state == 'pending_approval':
             self.logger.info("Rejected %d pending experiments.", len(self.pending_experiments))
+            self._audit_emit(
+                "rejected",
+                path_used=self._audit_path_override or "ai_hitl",
+                experiment_name=(
+                    self.pending_experiments[0].name
+                    if self.pending_experiments
+                    else None
+                ),
+                notes=f"{len(self.pending_experiments)} experiment(s) rejected",
+            )
             self.reject_experiment()
 
     def _clear_pending(self) -> None:

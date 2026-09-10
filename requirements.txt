@@ -23,6 +23,12 @@ Jinja2>=3.1.0
 # Kubernetes inject (official client; kubectl remains fallback)
 kubernetes>=28.1.0
 
-# Chaos Toolkit — canonical experiment runner (UCAL executor)
-chaostoolkit>=1.19.0
-chaostoolkit-kubernetes>=0.39.0
+# Chaos Toolkit — canonical experiment runner (UCAL executor).
+# Pin (==): CI matrix includes Python 3.10; chaostoolkit 1.20+ requires 3.12+.
+# Bump only after dropping 3.10 or verifying the dual-version matrix.
+chaostoolkit==1.19.0
+chaostoolkit-kubernetes==0.39.0
+
+# Chaos Mesh (in-cluster CRDs used by chaosk8s.chaosmesh.*) is NOT a pip package.
+# Pin the Helm chart / operator version in docs/dependency-pins.md when installing
+# into a lab cluster — keep that pin in sync with chaostoolkit-kubernetes above.

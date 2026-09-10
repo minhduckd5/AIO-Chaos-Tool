@@ -31,7 +31,7 @@ forces **unknown** failure patterns through a structured **describe** step, and
 Those scenarios re-enter the chaos pipeline for verification with accepted **residual
 risk** — moving from reactive firefighting toward **predictive maintenance**.
 
-See the advisor framework and module mapping in [Pipeline Framework](docs/pipeline-framework.md)
+Advisor framework and module mapping live under the local `docs/` knowledge base (not published yet).
 (Figure 1: research model; Figure 2: ChaosGen implementation).
 
 > Architecture auto-discovery (monolith, event-driven, serverless, client-server) is
@@ -238,12 +238,8 @@ docker compose --profile dev run --rm chaosgen_dev pytest -q
 
 ## Documentation
 
-- **[Getting Started](docs/getting-started.md)** — Install, config paths, advisor-loop commands.
-- **[E2E Demo Guide](docs/e2e-demo.md)** — End-to-end demo script (happy path + resilience beat).
-- **[Architecture](docs/architecture.md)** — Layers, packages, storage model (short summary).
-- **[Pipeline Framework](docs/pipeline-framework.md)** — Advisor research model mapped to ChaosGen modules.
-- **[Best Practices](docs/best-practices.md)** — Lab safety and gatekeeper interpretation.
-- **[Telemetry packs ADR](docs/adr-telemetry-packs-form-first.md)** — Dual-Mode Default packs vs Guided Custom Discovery.
+Operator and thesis docs live in the local `docs/` folder (gitignored) as a working knowledge base.
+They will be published to this repo when the set is complete and scrubbed of personal/lab-only material.
 
 ## License
 

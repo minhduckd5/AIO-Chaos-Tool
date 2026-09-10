@@ -89,5 +89,7 @@ log_signals:
   log_error_rate:
     - log_error_rate
     - pack__log_error_rate
+    # MODIFIED: bare FeatureEngineer column name used in lab exports / unit tests
+    - error_rate
 
 pooling: max

@@ -2,27 +2,35 @@
 
 from __future__ import annotations
 
+import logging
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from chaosgen.ml.anomaly_detector import AnomalyDetector
 from chaosgen.ml.canonical_features import apply_canonical_features
 from chaosgen.ml.cluster_labels import ClusterLabelStore
-from chaosgen.ml.feature_engineering import FeatureEngineer
+from chaosgen.ml.feature_engineering import FeatureEngineer, FeatureLayoutMismatchError
 from chaosgen.schemas.scenarios import AnomalyCluster, AnomalySummary
 from chaosgen.schemas.telemetry import TelemetryDataset
 
 if TYPE_CHECKING:
     from chaosgen.config.settings import ChaosGenSettings
 
+logger = logging.getLogger(__name__)
+
 
 def analyze_dataset(
     dataset: TelemetryDataset,
     model_path: str | None = None,
     settings: ChaosGenSettings | None = None,
+    notice_cb: Callable[[str], None] | None = None,
 ) -> tuple[list[AnomalyCluster], list[AnomalySummary], int]:
     """
     Transform telemetry, fit IsolationForest (or load pre-trained model), and return anomaly summaries.
+
+    ``notice_cb`` receives operator-facing notices (e.g. an incompatible
+    pre-trained model triggering a refit) so CLI/GUI can surface them without a
+    raw traceback.
 
     Returns (clusters, summaries, feature_row_count).
     """
@@ -43,10 +51,22 @@ def analyze_dataset(
 
     label_store = None
     if resolved_model and os.path.exists(resolved_model):
-        detector.load_model(resolved_model)
-        label_store = ClusterLabelStore.sidecar_for_model(resolved_model)
-        if label_store.path.exists():
-            label_store.load()
+        # --- START MODIFICATION ---
+        # Incompatible layout must never zero-align silently, and must never
+        # surface as a traceback mid-demo: warn once and refit on this window.
+        try:
+            detector.load_model(resolved_model, expected_layout=fe.layout)
+            label_store = ClusterLabelStore.sidecar_for_model(resolved_model)
+            if label_store.path.exists():
+                label_store.load()
+        except FeatureLayoutMismatchError as exc:
+            logger.warning("%s", exc)
+            if notice_cb is not None:
+                notice_cb(str(exc))
+            detector = AnomalyDetector(settings=anomaly_settings)
+            detector.fit(features)
+            label_store = None
+        # --- END MODIFICATION ---
     else:
         detector.fit(features)
 

@@ -10,10 +10,32 @@ from sklearn.cluster import KMeans
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
-from chaosgen.ml.canonical_features import align_features_to_model, extract_service_from_column
+from chaosgen.ml.canonical_features import (
+    align_features_to_model,
+    extract_service_from_column,
+    is_concrete_service,
+)
+from chaosgen.ml.feature_engineering import (
+    SERVICE_LEVEL,
+    SYSTEM_ENTITY,
+    TIMESTAMP_LEVEL,
+    WIDE_LAYOUT,
+    FeatureLayoutMismatchError,
+    detect_feature_layout,
+    split_feature_index,
+)
 from chaosgen.schemas.scenarios import AnomalyCluster, AnomalySeverity, AnomalySummary
 
 logger = logging.getLogger(__name__)
+
+# MODIFIED: entity-keyed columns are service-free (`error_rate__mean`), so the
+# error tokens match signal stems instead of per-service column fragments.
+_ERROR_FEATURE_TOKENS = (
+    "error_rate",
+    "error_count",
+    "error_ratio",
+    "span_error",
+)
 
 
 class AnomalyDetector:
@@ -59,6 +81,8 @@ class AnomalyDetector:
         self._is_fitted = False
         self._feature_names: List[str] = []
         self.canonical_schema_version: Optional[str] = None
+        # MODIFIED: layout of the matrix this detector was fitted/loaded on
+        self.feature_layout: Optional[str] = None
         # MODIFIED: P7/P0 — last K chosen during detect (auto or fixed)
         self.last_chosen_k: Optional[int] = None
 
@@ -104,15 +128,25 @@ class AnomalyDetector:
             raise ValueError("Cannot fit on empty feature matrix.")
 
         self._feature_names = list(features.columns)
+        self.feature_layout = detect_feature_layout(features)
         scaled = self.scaler.fit_transform(features.values)
         self.iso_forest.fit(scaled)
         self._is_fitted = True
-        logger.info("IsolationForest fitted on %d samples, %d features",
-                     scaled.shape[0], scaled.shape[1])
+        logger.info("IsolationForest fitted on %d samples, %d features (layout=%s)",
+                     scaled.shape[0], scaled.shape[1], self.feature_layout)
         return self
 
     def _align_for_inference(self, features: pd.DataFrame) -> pd.DataFrame:
         """Reindex live features to the trained schema before scaler/IF."""
+        # MODIFIED: never zero-pad across layouts — column names mean different
+        # things in wide vs entity-keyed, so alignment would be silently wrong.
+        live_layout = detect_feature_layout(features)
+        if self.feature_layout and self.feature_layout != live_layout:
+            raise FeatureLayoutMismatchError(
+                f"Loaded model was trained on feature layout "
+                f"'{self.feature_layout}' but the live matrix is '{live_layout}'. "
+                "Refit on this window or run 'chaosgen train-model --live'."
+            )
         if self._feature_names:
             return align_features_to_model(features, self._feature_names)
         return features
@@ -159,7 +193,13 @@ class AnomalyDetector:
 
         anomaly_features = scaled[anomaly_mask]
         anomaly_scores = scores[anomaly_mask]
-        anomaly_indices = features.index[anomaly_mask]
+        # MODIFIED: entity-keyed rows carry the service in the index, so
+        # attribution no longer depends on parsing column names.
+        timestamp_index, entity_values = split_feature_index(features.index)
+        anomaly_indices = timestamp_index[anomaly_mask]
+        anomaly_entities = (
+            entity_values[anomaly_mask] if entity_values is not None else None
+        )
 
         # Check if pre-trained KMeans model is already loaded
         if self.kmeans is not None:
@@ -202,6 +242,7 @@ class AnomalyDetector:
         return self._build_clusters(
             anomaly_features, anomaly_scores, anomaly_indices,
             cluster_labels, features.columns.tolist(),
+            anomaly_entities=anomaly_entities,
         )
 
     def detect_and_summarize(
@@ -228,13 +269,29 @@ class AnomalyDetector:
             "contamination": self.contamination,
             "n_clusters": self.n_clusters,
             "canonical_schema_version": self.canonical_schema_version,
+            # MODIFIED: persist the feature layout so a wide-layout model can
+            # never be silently zero-aligned onto entity-keyed features.
+            "feature_layout": self.feature_layout or WIDE_LAYOUT,
         }
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         joblib.dump(state, path)
-        logger.info("Model saved to %s", path)
+        logger.info(
+            "Model saved to %s (layout=%s, features=%d)",
+            path, state["feature_layout"], len(self._feature_names),
+        )
 
-    def load_model(self, path: str) -> "AnomalyDetector":
+    def load_model(
+        self, path: str, expected_layout: Optional[str] = None
+    ) -> "AnomalyDetector":
         state = joblib.load(path)
+        saved_layout = str(state.get("feature_layout") or WIDE_LAYOUT)
+        if expected_layout and saved_layout != str(expected_layout):
+            raise FeatureLayoutMismatchError(
+                f"Model {path} was trained on feature layout '{saved_layout}' "
+                f"but this run builds '{expected_layout}' features. "
+                "Refitting on the current window; run "
+                "'chaosgen train-model --live' to persist a compatible baseline."
+            )
         self.scaler = state["scaler"]
         self.iso_forest = state["iso_forest"]
         self.kmeans = state["kmeans"]
@@ -242,8 +299,9 @@ class AnomalyDetector:
         self.contamination = state["contamination"]
         self.n_clusters = state["n_clusters"]
         self.canonical_schema_version = state.get("canonical_schema_version")
+        self.feature_layout = saved_layout
         self._is_fitted = True
-        logger.info("Model loaded from %s", path)
+        logger.info("Model loaded from %s (layout=%s)", path, saved_layout)
         return self
 
     def get_timeline_data(self, features: pd.DataFrame) -> pd.DataFrame:
@@ -290,10 +348,11 @@ class AnomalyDetector:
         else:
             normalized_scores = np.zeros_like(raw_scores)
 
-        timeline = pd.DataFrame(index=features.index)
-        timeline['score'] = normalized_scores
-        timeline['anomaly_cluster'] = -1
+        # MODIFIED: entity-keyed rows collapse to one point per timestamp (worst
+        # entity wins) so the GUI/CLI timeline keeps a plain DatetimeIndex.
+        timestamp_index, entity_values = split_feature_index(features.index)
 
+        cluster_column = np.full(len(features), -1, dtype=int)
         if anomaly_count > 0:
             anomaly_features = scaled[anomaly_mask]
             if self.kmeans is not None and getattr(self.kmeans, "n_features_in_", None) == anomaly_features.shape[1]:
@@ -302,10 +361,21 @@ class AnomalyDetector:
                 actual_k = min(self.n_clusters, anomaly_count)
                 temp_kmeans = KMeans(n_clusters=actual_k, random_state=self.random_state, n_init=10)
                 cluster_labels = temp_kmeans.fit_predict(anomaly_features)
-            
-            timeline.loc[anomaly_mask, 'anomaly_cluster'] = cluster_labels
+            cluster_column[anomaly_mask] = np.asarray(cluster_labels, dtype=int)
 
-        return timeline
+        timeline = pd.DataFrame(
+            {'score': normalized_scores, 'anomaly_cluster': cluster_column},
+            index=timestamp_index,
+        )
+        if entity_values is None:
+            return timeline
+
+        timeline[SERVICE_LEVEL] = entity_values
+        work = timeline.reset_index(names=TIMESTAMP_LEVEL)
+        worst = work.groupby(TIMESTAMP_LEVEL)['score'].idxmax()
+        collapsed = work.loc[worst].set_index(TIMESTAMP_LEVEL).sort_index()
+        collapsed.index.name = None
+        return collapsed
 
     def plot_timeline(self, features: pd.DataFrame, output_path: str) -> None:
         """
@@ -351,11 +421,12 @@ class AnomalyDetector:
             
             info = cluster_info_map.get(cid)
             if info:
-                # Clean up feature names to make the legend readable (e.g. drop prefixes/suffixes)
+                # MODIFIED: entity-keyed names are already short (signal__stat);
+                # only long legacy wide names need trimming.
                 cleaned_feats = []
                 for f, _ in info.dominant_features[:2]:
                     parts = f.split("__")
-                    cleaned_feats.append(parts[1] if len(parts) >= 2 else f)
+                    cleaned_feats.append(f if len(parts) <= 2 else parts[1])
                 top_feats = ", ".join(cleaned_feats)
                 label_text = f"Cluster {cid} ({info.sample_count} windows): {top_feats}"
             else:
@@ -369,8 +440,8 @@ class AnomalyDetector:
         plt.xlabel('Timestamp (UTC)', fontsize=12)
         plt.ylabel('Normalized Outlier Score (Higher = More Anomalous)', fontsize=12)
         
-        is_datetime = isinstance(features.index, pd.DatetimeIndex) or (
-            len(features.index) > 0 and isinstance(features.index[0], (pd.Timestamp, datetime))
+        is_datetime = isinstance(timeline.index, pd.DatetimeIndex) or (
+            len(timeline.index) > 0 and isinstance(timeline.index[0], (pd.Timestamp, datetime))
         )
 
         # Format dates nicely if they are DatetimeIndex
@@ -399,6 +470,7 @@ class AnomalyDetector:
         anomaly_indices: pd.DatetimeIndex,
         cluster_labels: np.ndarray,
         feature_names: List[str],
+        anomaly_entities: Optional[np.ndarray] = None,
     ) -> List[AnomalyCluster]:
         clusters: List[AnomalyCluster] = []
         # MODIFIED: positional take — boolean Index.__getitem__ can yield empty on DTIndex
@@ -422,7 +494,10 @@ class AnomalyDetector:
                 cluster_features, feature_names, top_n=5
             )
 
-            affected = self._extract_service_names(dominant)
+            cluster_entities = (
+                anomaly_entities[mask] if anomaly_entities is not None else None
+            )
+            affected = self._extract_service_names(dominant, cluster_entities)
 
             first = cluster_timestamps[0]
             if hasattr(first, "timestamp"):
@@ -480,8 +555,24 @@ class AnomalyDetector:
     @staticmethod
     def _extract_service_names(
         dominant_features: List[Tuple[str, float]],
+        cluster_entities: Optional[np.ndarray] = None,
     ) -> List[str]:
-        """Extract microservice identities from dominant feature column names."""
+        """
+        Resolve microservice identities for a cluster.
+
+        Entity-keyed layout: services come from the row index (concrete services
+        first, ``_system`` last). Wide layout: parsed from column names.
+        """
+        # MODIFIED: index-based attribution for the entity-keyed layout
+        if cluster_entities is not None and len(cluster_entities):
+            observed = {str(e) for e in cluster_entities if str(e)}
+            concrete = sorted(e for e in observed if is_concrete_service(e))
+            if concrete:
+                system = [SYSTEM_ENTITY] if SYSTEM_ENTITY in observed else []
+                return concrete + system
+            if observed:
+                return sorted(observed)
+
         services: set[str] = set()
         for feat_name, _ in dominant_features:
             service = extract_service_from_column(feat_name)
@@ -533,13 +624,15 @@ class AnomalyDetector:
         """
         Derive a log error pattern from dominant features.
 
-        The log-derived columns `error_rate` / `error_count` count ERROR/FATAL/
-        CRITICAL/PANIC log lines (see FeatureEngineer._extract_log_features), so a
-        dominating error feature is treated as a severe log signal. Returns a
-        string containing a severe keyword (consumed by the gatekeeper), or None.
+        Both metric error signals (`error_rate`, `error_ratio`, `span_error_rate`)
+        and log-derived ones (`logline_error_rate`, `logline_error_count`, which
+        count ERROR/FATAL/CRITICAL/PANIC lines) are treated as severe. The service
+        is deliberately absent from the string — it comes from the summary's
+        index-derived `service_name`, which keeps `history.db` chronic grouping
+        stable across windows.
         """
         for feat_name, score in cluster.dominant_features:
             lowered = feat_name.lower()
-            if "error_rate" in lowered or "error_count" in lowered:
+            if any(token in lowered for token in _ERROR_FEATURE_TOKENS):
                 return f"error: elevated {feat_name} (z={score:.2f})"
         return None

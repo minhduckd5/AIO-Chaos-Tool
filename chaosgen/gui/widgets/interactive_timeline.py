@@ -5,6 +5,8 @@ from PySide6.QtGui import QColor, QCursor, QMouseEvent, QWheelEvent, QPen, QBrus
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QSizePolicy
 from PySide6.QtCharts import QChart, QChartView, QLineSeries, QScatterSeries, QDateTimeAxis, QValueAxis, QLegend
 
+from chaosgen.gui.theme import Colors, button_toolbar_qss, chart_tooltip_qss
+
 
 class InteractiveChartView(QChartView):
     """
@@ -93,26 +95,8 @@ class InteractiveTimelineWidget(QWidget):
         toolbar_layout.setContentsMargins(4, 4, 4, 4)
         toolbar_layout.setSpacing(6)
 
-        # Controls styled to match the dark theme
-        btn_style = """
-            QPushButton {
-                background-color: #252631;
-                color: #e2e8f0;
-                border: 1px solid #363748;
-                border-radius: 4px;
-                padding: 4px 12px;
-                font-size: 14px;
-                font-weight: bold;
-                min-width: 32px;
-            }
-            QPushButton:hover {
-                background-color: #32334a;
-                border-color: #3b82f6;
-            }
-            QPushButton:pressed {
-                background-color: #3b3c55;
-            }
-        """
+        # Controls styled via theme tokens (phase a)
+        btn_style = button_toolbar_qss()
 
         self.btn_zoom_in = QPushButton("+")
         self.btn_zoom_out = QPushButton("-")
@@ -134,16 +118,16 @@ class InteractiveTimelineWidget(QWidget):
 
         # Chart initialization
         self.chart = QChart()
-        # Set dark theme palette for background and border
+        # MODIFIED: theme Colors instead of raw hex
         self.chart.setBackgroundRoundness(8)
-        self.chart.setBackgroundBrush(QBrush(QColor("#1e1f28")))
-        self.chart.setPlotAreaBackgroundBrush(QBrush(QColor("#1a1b26")))
+        self.chart.setBackgroundBrush(QBrush(QColor(Colors.BG_PRIMARY)))
+        self.chart.setPlotAreaBackgroundBrush(QBrush(QColor(Colors.BG_INPUT)))
         self.chart.setPlotAreaBackgroundVisible(True)
 
         # Configure Legend at the bottom
         self.chart.legend().setVisible(True)
         self.chart.legend().setAlignment(Qt.AlignBottom)
-        self.chart.legend().setLabelColor(QColor("#e2e8f0"))
+        self.chart.legend().setLabelColor(QColor(Colors.TEXT_PRIMARY))
         self.chart.legend().setMarkerShape(QLegend.MarkerShapeCircle)
 
         self.chart_view = InteractiveChartView(self.chart, self, self)
@@ -190,7 +174,8 @@ class InteractiveTimelineWidget(QWidget):
         # 1. Create continuous Outlier Score Line Trace
         trace_series = QLineSeries()
         trace_series.setName("Outlier Score")
-        pen = QPen(QColor("#64748b"))
+        # MODIFIED: theme tokens
+        pen = QPen(QColor(Colors.TEXT_MUTED))
         pen.setWidthF(1.5)
         trace_series.setPen(pen)
 
@@ -199,7 +184,7 @@ class InteractiveTimelineWidget(QWidget):
         normal_series.setName("Normal State")
         normal_series.setMarkerShape(QScatterSeries.MarkerShapeCircle)
         normal_series.setMarkerSize(8)
-        normal_series.setColor(QColor("#475569"))
+        normal_series.setColor(QColor(Colors.CHART_BASELINE))
         normal_series.setPen(QPen(Qt.NoPen))
 
         # Add data to trace and normal series
@@ -224,10 +209,7 @@ class InteractiveTimelineWidget(QWidget):
         ].values
         unique_clusters = sorted(list(set(cluster_labels))) if len(cluster_labels) > 0 else []
 
-        colors = [
-            "#FF5E5B", "#00ADFF", "#00E676", "#FFA500", "#D500F9",
-            "#FFD700", "#00CED1", "#FF1493", "#9B59B6", "#1ABC9C"
-        ]
+        colors = Colors.CHART_SERIES
         cluster_info_map = {c.cluster_id: c for c in clusters} if clusters else {}
 
         for cid in unique_clusters:
@@ -246,7 +228,7 @@ class InteractiveTimelineWidget(QWidget):
             scatter.setMarkerShape(QScatterSeries.MarkerShapeCircle)
             scatter.setMarkerSize(12)
             scatter.setColor(QColor(cluster_color))
-            scatter.setPen(QPen(QColor("#1e1f28"), 1))
+            scatter.setPen(QPen(QColor(Colors.BG_PRIMARY), 1))
 
             for ts, row in cluster_data.iterrows():
                 msecs = int(ts.timestamp() * 1000)
@@ -265,9 +247,9 @@ class InteractiveTimelineWidget(QWidget):
         x_axis = QDateTimeAxis()
         x_axis.setFormat("MM-dd HH:mm")
         x_axis.setTitleText("Timestamp (UTC)")
-        x_axis.setTitleBrush(QBrush(QColor("#e2e8f0")))
-        x_axis.setLabelsColor(QColor("#94a3b8"))
-        x_axis.setGridLineColor(QColor("#363748"))
+        x_axis.setTitleBrush(QBrush(QColor(Colors.TEXT_PRIMARY)))
+        x_axis.setLabelsColor(QColor(Colors.TEXT_SECONDARY))
+        x_axis.setGridLineColor(QColor(Colors.BORDER))
         x_axis.setGridLineVisible(True)
 
         min_time = QDateTime.fromMSecsSinceEpoch(int(timeline_df.index.min().timestamp() * 1000))
@@ -277,9 +259,9 @@ class InteractiveTimelineWidget(QWidget):
         y_axis = QValueAxis()
         y_axis.setRange(0.0, 1.05)
         y_axis.setTitleText("Outlier Severity Score")
-        y_axis.setTitleBrush(QBrush(QColor("#e2e8f0")))
-        y_axis.setLabelsColor(QColor("#94a3b8"))
-        y_axis.setGridLineColor(QColor("#363748"))
+        y_axis.setTitleBrush(QBrush(QColor(Colors.TEXT_PRIMARY)))
+        y_axis.setLabelsColor(QColor(Colors.TEXT_SECONDARY))
+        y_axis.setGridLineColor(QColor(Colors.BORDER))
         y_axis.setGridLineVisible(True)
 
         self.chart.addAxis(x_axis, Qt.AlignBottom)
@@ -361,18 +343,8 @@ class InteractiveTimelineWidget(QWidget):
 
             self.tooltip.setText(tooltip_text.strip())
 
-            # Adjust border outline depending on lock state (blue when locked, standard gray when hovering)
-            border_color = "#3b82f6" if persistent else "#363748"
-            self.tooltip.setStyleSheet(f"""
-                QLabel {{
-                    background-color: #252631;
-                    color: #e2e8f0;
-                    border: 1px solid {border_color};
-                    border-radius: 6px;
-                    padding: 8px;
-                    font-size: 11px;
-                }}
-            """)
+            # MODIFIED: theme helper (locked → ACCENT border, else BORDER)
+            self.tooltip.setStyleSheet(chart_tooltip_qss(locked=persistent))
 
             # Position next to point inside the chart view coordinates
             pixel_pos = self.chart.mapToPosition(point)

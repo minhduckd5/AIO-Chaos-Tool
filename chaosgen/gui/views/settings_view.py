@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 from chaosgen.config.paths import SECRETS_FILE
 from chaosgen.config.profile_presets import default_environment_for, profile_priority_tier
 from chaosgen.config.profile_validation import validate_profile_connect
-from chaosgen.gui.theme import Colors
+from chaosgen.gui.theme import Colors, qss_color
 from chaosgen.schemas.discovery import ArchitectureType, EnvironmentType
 
 logger = logging.getLogger(__name__)
@@ -566,7 +566,8 @@ class SettingsView(QWidget):
 
         except Exception as exc:
             self._status.setText(f"Error: {exc}")
-            self._status.setStyleSheet("color: #f87171;")
+            # MODIFIED: STATUS_ERROR semantic token
+            self._status.setStyleSheet(qss_color(Colors.STATUS_ERROR))
             logger.exception("Failed to save settings")
 
     def _on_clear(self) -> None:
@@ -586,7 +587,8 @@ class SettingsView(QWidget):
             self._openai_base_url.clear()
             self._sync_secret_fields_from_disk()
             self._status.setText("All keys cleared.")
-            self._status.setStyleSheet("color: #fbbf24;")
+            # MODIFIED: STATUS_WARN semantic token
+            self._status.setStyleSheet(qss_color(Colors.STATUS_WARN))
         except Exception as exc:
             self._status.setText(f"Error: {exc}")
             logger.exception("Failed to clear secrets")

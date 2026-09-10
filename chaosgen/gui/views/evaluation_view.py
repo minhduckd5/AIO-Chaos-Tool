@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QFrame, QTextEdit, QGroupBox,
 )
 
-from chaosgen.gui.theme import Colors, Fonts, Spacing
+from chaosgen.gui.theme import Colors, Fonts, Spacing, set_semantic_role
 from chaosgen.schemas.scenarios import ExperimentVerdict
 
 
@@ -65,9 +65,9 @@ class EvaluationView(QWidget):
 
         status_row = QHBoxLayout()
         self._ops_status = QLabel("No result yet")
-        self._ops_status.setStyleSheet(
-            f"color: {Colors.TEXT_SECONDARY}; font-size: {Fonts.SIZE_TITLE}px; font-weight: bold;"
-        )
+        # MODIFIED: chrome objectName; color via set_semantic_role (unpolish/polish)
+        self._ops_status.setObjectName("opsStatus")
+        set_semantic_role(self._ops_status, "secondary")
         status_row.addWidget(self._ops_status)
         status_row.addStretch()
         refresh_ops = QPushButton("Refresh outcome")
@@ -96,11 +96,9 @@ class EvaluationView(QWidget):
 
         self._align_metrics = QLabel("No AI alignment data for this run")
         self._align_metrics.setWordWrap(True)
-        self._align_metrics.setStyleSheet(
-            f"color: {Colors.TEXT_PRIMARY}; font-size: {Fonts.SIZE_NORMAL}px; "
-            f"padding: 8px; background: {Colors.BG_SECONDARY}; "
-            f"border: 1px solid {Colors.BORDER}; border-radius: 6px;"
-        )
+        # MODIFIED: chrome objectName; runtime color via set_semantic_role
+        self._align_metrics.setObjectName("alignMetrics")
+        set_semantic_role(self._align_metrics, "primary")
         ops_layout.addWidget(self._align_metrics)
 
         claim_lbl = QLabel("What we claimed")
@@ -190,11 +188,7 @@ class EvaluationView(QWidget):
         data = self._load_alignment_artifact()
         if not data:
             self._align_metrics.setText("No AI alignment data for this run")
-            self._align_metrics.setStyleSheet(
-                f"color: {Colors.TEXT_MUTED}; font-size: {Fonts.SIZE_NORMAL}px; "
-                f"padding: 8px; background: {Colors.BG_SECONDARY}; "
-                f"border: 1px solid {Colors.BORDER}; border-radius: 6px;"
-            )
+            set_semantic_role(self._align_metrics, "muted")
             return
 
         run_row: dict | None = None
@@ -238,18 +232,14 @@ class EvaluationView(QWidget):
             or (run_row or {}).get("alignment_outcome")
             or ""
         ).lower()
-        color = Colors.TEXT_PRIMARY
+        role = "primary"
         if outcome_lower == "aligned":
-            color = Colors.SUCCESS
+            role = "success"
         elif outcome_lower in {"false_alarm", "missed_anomaly"}:
-            color = Colors.WARNING
+            role = "warning"
 
         self._align_metrics.setText(text)
-        self._align_metrics.setStyleSheet(
-            f"color: {color}; font-size: {Fonts.SIZE_NORMAL}px; "
-            f"padding: 8px; background: {Colors.BG_SECONDARY}; "
-            f"border: 1px solid {Colors.BORDER}; border-radius: 6px;"
-        )
+        set_semantic_role(self._align_metrics, role)
 
     def _refresh_operational(self):
         """Load last ExpectationVerdictReport into stakeholder language."""
@@ -259,9 +249,7 @@ class EvaluationView(QWidget):
             report = load_verdict_report()
         except FileNotFoundError:
             self._ops_status.setText("No chaos outcome yet")
-            self._ops_status.setStyleSheet(
-                f"color: {Colors.TEXT_SECONDARY}; font-size: {Fonts.SIZE_TITLE}px; font-weight: bold;"
-            )
+            set_semantic_role(self._ops_status, "secondary")
             self._ops_headline.setText(
                 "Run a chaos experiment with expectations (or chaosgen verdict), "
                 "then refresh this panel."
@@ -280,16 +268,14 @@ class EvaluationView(QWidget):
             self._ops_headline.setText(str(exc))
             return
 
-        color = {
-            ExperimentVerdict.PASS: Colors.SUCCESS,
-            ExperimentVerdict.PARTIAL: Colors.WARNING,
-            ExperimentVerdict.FAIL: Colors.DANGER,
-        }.get(report.verdict, Colors.TEXT_PRIMARY)
+        role = {
+            ExperimentVerdict.PASS: "success",
+            ExperimentVerdict.PARTIAL: "warning",
+            ExperimentVerdict.FAIL: "danger",
+        }.get(report.verdict, "primary")
 
         self._ops_status.setText(report.stakeholder_status_label())
-        self._ops_status.setStyleSheet(
-            f"color: {color}; font-size: {Fonts.SIZE_TITLE}px; font-weight: bold;"
-        )
+        set_semantic_role(self._ops_status, role)
         self._ops_headline.setText(report.stakeholder_headline())
         self._ops_claim.setPlainText(report.claim.strip())
         self._ops_rationale.setPlainText(report.rationale.strip())

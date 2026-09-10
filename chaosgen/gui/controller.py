@@ -65,6 +65,9 @@ class AppController(QObject):
     # Status refresh
     status_refreshed = Signal(dict)
 
+    # Audit actor missing (A8) — views must block the action with a dialog
+    audit_actor_required = Signal(str)
+
     def __init__(self):
         super().__init__()
         # Deferred import to keep gui package light when orchestrator is heavy
@@ -72,6 +75,7 @@ class AppController(QObject):
         self.orchestrator = ChaosOrchestrator()
 
         self._workers: List[QThread] = []
+        self._actor_prompt: Optional[Callable[[], Optional[str]]] = None
 
         self._setup_logging()
 
@@ -118,6 +122,8 @@ class AppController(QObject):
         self._spawn(worker)
 
     def execute_action_async(self, module: str, action: str, params: Dict[str, Any]):
+        if not self.ensure_audit_actor():
+            return
         worker = AsyncWorker(self.orchestrator.execute_action, module, action, params)
         worker.signals.finished.connect(
             lambda result: self.log_message.emit(f"Action result: {result}")
@@ -128,6 +134,8 @@ class AppController(QObject):
         self._spawn(worker)
 
     def run_experiment_async(self, experiment):
+        if not self.ensure_audit_actor():
+            return
         self.experiment_started.emit(experiment.name)
         worker = AsyncWorker(self.orchestrator.run_experiment, experiment)
         worker.signals.finished.connect(
@@ -141,6 +149,8 @@ class AppController(QObject):
     # --- START MODIFICATION ---
     # Phase B: multi-service suite runner for cascading blast demos
     def run_experiment_suite_async(self, experiments, delay_seconds: float = 0.0):
+        if not self.ensure_audit_actor():
+            return
         label = f"suite×{len(experiments)}"
         self.experiment_started.emit(label)
         worker = AsyncWorker(
@@ -160,6 +170,8 @@ class AppController(QObject):
         self._spawn(worker)
 
     def run_ctk_experiment_async(self, **kwargs):
+        if not self.ensure_audit_actor():
+            return
         title = kwargs.get("title") or "ctk-experiment"
         self.experiment_started.emit(title)
         worker = AsyncWorker(self.orchestrator.run_ctk_experiment, **kwargs)
@@ -241,7 +253,37 @@ class AppController(QObject):
         self.orchestrator.run_ai_experiment(report)
         self.state_changed.emit(self.state)
 
+    # ------------------------------------------------------------------
+    # Audit actor (A8)
+    # ------------------------------------------------------------------
+
+    def set_actor_prompt(self, prompt: Callable[[], Optional[str]]) -> None:
+        """Register the UI dialog used to ask for the operator name once."""
+        self._actor_prompt = prompt
+
+    def ensure_audit_actor(self) -> bool:
+        """
+        Bind the operator identity before an auditable action (A8).
+
+        Returns False instead of raising so the caller blocks the action with a
+        dialog; an uncaught exception here would take down the Qt app.
+        """
+        from chaosgen.storage.audit import AuditActorRequired, resolve_actor
+
+        try:
+            actor = resolve_actor(prompt=self._actor_prompt)
+        except AuditActorRequired as exc:
+            self.audit_actor_required.emit(str(exc))
+            return False
+        except Exception as exc:
+            self.audit_actor_required.emit(f"Audit actor resolution failed: {exc}")
+            return False
+        self.orchestrator.set_audit_context(actor=actor)
+        return True
+
     def approve_and_run(self, index: int):
+        if not self.ensure_audit_actor():
+            return
         worker = AsyncWorker(self.orchestrator.approve_and_run, index)
         worker.signals.finished.connect(
             lambda _: self.experiment_finished.emit(True, "Approved experiment completed")
@@ -252,6 +294,8 @@ class AppController(QObject):
         self._spawn(worker)
 
     def reject_all(self):
+        if not self.ensure_audit_actor():
+            return
         self.orchestrator.reject_all()
         self.state_changed.emit(self.state)
 

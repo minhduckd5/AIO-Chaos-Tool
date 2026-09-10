@@ -29,7 +29,7 @@ from chaosgen.gui.advisor_presenter import (
 )
 from chaosgen.gui.analysis_pipeline import AnalysisRequest, AnalysisResult
 from chaosgen.gui.widgets.interactive_timeline import InteractiveTimelineWidget
-from chaosgen.gui.theme import Colors, Fonts, Spacing
+from chaosgen.gui.theme import Colors, Fonts, Spacing, set_semantic_role
 from chaosgen.schemas.scenarios import (
     AdvisorReport,
     ScenarioKnowledgeState,
@@ -124,9 +124,7 @@ class AdvisorView(QWidget):
         layout.addWidget(subtitle)
 
         self._step_label = QLabel("Step 1 of 3 — Data source & endpoints")
-        self._step_label.setStyleSheet(
-            f"color: {Colors.ACCENT}; font-size: {Fonts.SIZE_NORMAL}px; font-weight: bold;"
-        )
+        self._step_label.setObjectName("stepWizard")
         layout.addWidget(self._step_label)
 
         self._stack = QStackedWidget()
@@ -214,10 +212,7 @@ class AdvisorView(QWidget):
         self._ingest_mode_combo.setEnabled(False)
         self._style_input(self._ingest_mode_combo)
         self._ingest_beta_badge = QLabel("Beta / Experimental")
-        self._ingest_beta_badge.setStyleSheet(
-            f"color: {Colors.WARNING}; font-size: {Fonts.SIZE_SMALL}px; "
-            f"border: 1px solid {Colors.WARNING}; border-radius: 4px; padding: 2px 6px;"
-        )
+        self._ingest_beta_badge.setObjectName("betaBadge")
         self._ingest_beta_badge.setVisible(False)
         ingest_mode_row.addWidget(self._ingest_mode_combo)
         ingest_mode_row.addWidget(self._ingest_beta_badge)
@@ -231,9 +226,7 @@ class AdvisorView(QWidget):
 
         self._custom_status_label = QLabel("")
         self._custom_status_label.setWordWrap(True)
-        self._custom_status_label.setStyleSheet(
-            f"color: {Colors.TEXT_SECONDARY}; font-size: {Fonts.SIZE_SMALL}px;"
-        )
+        self._custom_status_label.setObjectName("textSecondary")
         custom_l.addWidget(self._custom_status_label)
 
         toolbar = QHBoxLayout()
@@ -253,18 +246,13 @@ class AdvisorView(QWidget):
         self._guided_tree.setUniformRowHeights(True)
         self._guided_tree.setMinimumHeight(180)
         self._guided_tree.setMaximumHeight(320)
-        self._guided_tree.setStyleSheet(
-            f"QTreeWidget {{ background-color: {Colors.BG_INPUT}; color: {Colors.TEXT_PRIMARY}; "
-            f"border: 1px solid {Colors.BORDER}; border-radius: 4px; }}"
-        )
+        self._guided_tree.setObjectName("treeDark")
         self._guided_tree.header().setStretchLastSection(True)
         self._guided_tree.header().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         custom_l.addWidget(self._guided_tree)
 
         self._custom_zero_hint = QLabel("Select at least one metric to proceed")
-        self._custom_zero_hint.setStyleSheet(
-            f"color: {Colors.DANGER}; font-size: {Fonts.SIZE_SMALL}px;"
-        )
+        self._custom_zero_hint.setObjectName("dangerSmall")
         self._custom_zero_hint.setVisible(False)
         custom_l.addWidget(self._custom_zero_hint)
 
@@ -364,7 +352,7 @@ class AdvisorView(QWidget):
         self._zscore_spin = QDoubleSpinBox()
         self._zscore_spin.setRange(0.5, 10.0)
         self._zscore_spin.setSingleStep(0.1)
-        self._zscore_spin.setValue(3.0)
+        self._zscore_spin.setValue(5.0)
         self._style_input(self._zscore_spin)
 
         self._contamination_spin = QDoubleSpinBox()
@@ -410,7 +398,7 @@ class AdvisorView(QWidget):
         self._w_safe_label = QLabel("Raw: 20 (20%)")
 
         for lbl in (self._w_conf_label, self._w_hist_label, self._w_cov_label, self._w_safe_label):
-            lbl.setStyleSheet(f"color: {Colors.TEXT_SECONDARY}; min-width: 90px;")
+            lbl.setObjectName("textSecondaryWide")
 
         for slider in (self._w_conf_slider, self._w_hist_slider, self._w_cov_slider, self._w_safe_slider):
             slider.valueChanged.connect(self._update_normalized_labels)
@@ -452,7 +440,7 @@ class AdvisorView(QWidget):
 
         self._credential_status = QLabel()
         self._credential_status.setWordWrap(True)
-        self._credential_status.setStyleSheet(f"color: {Colors.TEXT_SECONDARY}; font-size: {Fonts.SIZE_SMALL}px;")
+        self._credential_status.setObjectName("textSecondary")
         llm_form.addRow("Credentials:", self._credential_status)
         llm_test_row = QHBoxLayout()
         self._test_llm_btn = QPushButton("Test LLM connection")
@@ -468,27 +456,17 @@ class AdvisorView(QWidget):
         # P0: status strip above Run analysis
         self._ingest_scope_frame = QFrame()
         self._ingest_scope_frame.setObjectName("ingestScopeStrip")
-        self._ingest_scope_frame.setStyleSheet(
-            f"#ingestScopeStrip {{ background-color: {Colors.BG_CARD}; "
-            f"border: 1px solid {Colors.BORDER}; border-radius: 6px; }}"
-        )
         strip_l = QVBoxLayout(self._ingest_scope_frame)
         strip_l.setContentsMargins(12, 8, 12, 8)
         self._ingest_status_label = QLabel("")
         self._ingest_status_label.setWordWrap(True)
-        self._ingest_status_label.setStyleSheet(
-            f"color: {Colors.TEXT_SECONDARY}; font-size: {Fonts.SIZE_SMALL}px;"
-        )
+        self._ingest_status_label.setObjectName("textSecondary")
         strip_l.addWidget(self._ingest_status_label)
         s1.addWidget(self._ingest_scope_frame)
         # --- END MODIFICATION ---
 
         self._analyze_btn = QPushButton("Run analysis")
-        self._analyze_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {Colors.ACCENT}; color: white; "
-            f"border: none; border-radius: 6px; padding: 10px 24px; font-weight: bold; }}"
-            f"QPushButton:hover {{ background-color: {Colors.ACCENT_HOVER}; }}"
-        )
+        self._analyze_btn.setObjectName("btnPrimary")
         self._analyze_btn.clicked.connect(self._on_analyze)
         s1.addWidget(self._analyze_btn, alignment=Qt.AlignLeft)
         s1.addStretch()
@@ -504,9 +482,7 @@ class AdvisorView(QWidget):
         step2 = QWidget()
         s2 = QVBoxLayout(step2)
         self._progress_label = QLabel("Running telemetry pipeline…")
-        self._progress_label.setStyleSheet(
-            f"color: {Colors.TEXT_PRIMARY}; font-size: {Fonts.SIZE_LARGE}px;"
-        )
+        self._progress_label.setObjectName("textPrimaryLarge")
         s2.addWidget(self._progress_label)
         s2.addStretch()
         self._stack.addWidget(step2)
@@ -519,7 +495,7 @@ class AdvisorView(QWidget):
         s3 = QVBoxLayout(step3)
         self._summary_label = QLabel()
         self._summary_label.setWordWrap(True)
-        self._summary_label.setStyleSheet(f"color: {Colors.TEXT_PRIMARY};")
+        self._summary_label.setObjectName("textPrimary")
         s3.addWidget(self._summary_label)
 
         self._outer_splitter = QSplitter(Qt.Vertical)
@@ -590,11 +566,7 @@ class AdvisorView(QWidget):
         desc_toolbar.addStretch()
         self._promote_btn = QPushButton("Promote to catalog")
         self._promote_btn.setEnabled(False)
-        self._promote_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {Colors.ACCENT}; color: white; "
-            f"border: none; border-radius: 4px; padding: 6px 16px; }}"
-            f"QPushButton:disabled {{ background-color: {Colors.BG_HOVER}; color: {Colors.TEXT_MUTED}; }}"
-        )
+        self._promote_btn.setObjectName("btnPrimary")
         self._promote_btn.clicked.connect(self._on_promote_clicked)
         desc_toolbar.addWidget(self._promote_btn)
         desc_layout.addLayout(desc_toolbar)
@@ -647,11 +619,7 @@ class AdvisorView(QWidget):
         self._detail_text = QTextEdit()
         self._detail_text.setReadOnly(True)
         self._detail_text.setMinimumHeight(100)
-        self._detail_text.setStyleSheet(
-            f"background-color: {Colors.BG_INPUT}; color: {Colors.TEXT_PRIMARY}; "
-            f"font-family: {Fonts.FAMILY_MONO}; font-size: {Fonts.SIZE_SMALL}px; "
-            f"border: 1px solid {Colors.BORDER}; padding: {Spacing.SM}px;"
-        )
+        self._detail_text.setObjectName("detailMono")
         self._outer_splitter.addWidget(self._detail_text)
         self._outer_splitter.setStretchFactor(0, 2)
         self._outer_splitter.setStretchFactor(1, 1)
@@ -662,10 +630,7 @@ class AdvisorView(QWidget):
         self._export_btn = QPushButton("Export report…")
         self._export_btn.clicked.connect(self._on_export_report)
         self._reject_btn = QPushButton("Reject all scenarios")
-        self._reject_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {Colors.DANGER}; color: white; "
-            f"border: none; border-radius: 6px; padding: 8px 20px; }}"
-        )
+        self._reject_btn.setObjectName("btnDanger")
         self._reject_btn.clicked.connect(self._on_reject_all)
         self._back_btn = QPushButton("New analysis")
         self._back_btn.clicked.connect(self._go_step1)
@@ -683,10 +648,8 @@ class AdvisorView(QWidget):
     def _style_table(self, table: QTableWidget):
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setEditTriggers(QTableWidget.NoEditTriggers)
-        table.setStyleSheet(
-            f"QTableWidget {{ background-color: {Colors.BG_CARD}; border: 1px solid {Colors.BORDER}; }}"
-            f"QHeaderView::section {{ background-color: {Colors.BG_SECONDARY}; padding: 6px; }}"
-        )
+        # MODIFIED: dataTable objectName from theme
+        table.setObjectName("dataTable")
 
     def _make_card(self, title: str) -> QWidget:
         card = QWidget()
@@ -694,17 +657,13 @@ class AdvisorView(QWidget):
         cl = QVBoxLayout(card)
         cl.setContentsMargins(Spacing.LG, Spacing.LG, Spacing.LG, Spacing.LG)
         header = QLabel(title)
-        header.setStyleSheet(
-            f"color: {Colors.TEXT_PRIMARY}; font-weight: bold; font-size: {Fonts.SIZE_LARGE}px;"
-        )
+        header.setObjectName("cardTitle")
         cl.addWidget(header)
         return card
 
     def _style_input(self, widget):
-        widget.setStyleSheet(
-            f"background-color: {Colors.BG_INPUT}; color: {Colors.TEXT_PRIMARY}; "
-            f"border: 1px solid {Colors.BORDER}; border-radius: 4px; padding: 6px;"
-        )
+        # MODIFIED: formInput objectName from theme
+        widget.setObjectName("formInput")
 
     def _connect_signals(self):
         self._controller.advisor_finished.connect(self._on_analysis_finished)
@@ -814,9 +773,7 @@ class AdvisorView(QWidget):
         """Refresh Custom checklist from prefetch cache / in-flight / error state."""
         if self._guided_prefetch_pending and self._guided_catalog is None:
             self._custom_status_label.setText("Discovering live signals…")
-            self._custom_status_label.setStyleSheet(
-                f"color: {Colors.TEXT_SECONDARY}; font-size: {Fonts.SIZE_SMALL}px;"
-            )
+            set_semantic_role(self._custom_status_label, "secondary")
             self._guided_tree.clear()
             self._set_guided_toolbar_enabled(False)
             return
@@ -826,9 +783,7 @@ class AdvisorView(QWidget):
                 f"Discovery failed: {self._guided_prefetch_error}. "
                 "Default mode remains available."
             )
-            self._custom_status_label.setStyleSheet(
-                f"color: {Colors.WARNING}; font-size: {Fonts.SIZE_SMALL}px;"
-            )
+            set_semantic_role(self._custom_status_label, "warning")
             self._guided_tree.clear()
             self._set_guided_toolbar_enabled(False)
             return
@@ -837,9 +792,7 @@ class AdvisorView(QWidget):
             self._custom_status_label.setText(
                 "Check connection to discover live signals for Custom mode."
             )
-            self._custom_status_label.setStyleSheet(
-                f"color: {Colors.TEXT_SECONDARY}; font-size: {Fonts.SIZE_SMALL}px;"
-            )
+            set_semantic_role(self._custom_status_label, "secondary")
             self._guided_tree.clear()
             self._set_guided_toolbar_enabled(False)
             return
@@ -852,9 +805,7 @@ class AdvisorView(QWidget):
         if warnings:
             msg += " · " + "; ".join(warnings[:2])
         self._custom_status_label.setText(msg)
-        self._custom_status_label.setStyleSheet(
-            f"color: {Colors.TEXT_SECONDARY}; font-size: {Fonts.SIZE_SMALL}px;"
-        )
+        set_semantic_role(self._custom_status_label, "secondary")
         self._populate_guided_tree(self._guided_catalog)
         self._set_guided_toolbar_enabled(True)
         # Default action UX: apply Suggested once when first populated empty
@@ -974,9 +925,7 @@ class AdvisorView(QWidget):
         ready, message = provider_credential_status(provider)
         color = Colors.SUCCESS if ready else Colors.WARNING
         self._credential_status.setText(message)
-        self._credential_status.setStyleSheet(
-            f"color: {color}; font-size: {Fonts.SIZE_SMALL}px;"
-        )
+        set_semantic_role(self._credential_status, "secondary")
 
     def _load_defaults(self):
         try:
@@ -1052,8 +1001,7 @@ class AdvisorView(QWidget):
         parts = [f"{name}: {msg}" for name, msg in health.items()]
         self._check_status.setText("  |  ".join(parts))
         all_ok = all(not str(msg).startswith("FAIL") for msg in health.values())
-        color = Colors.SUCCESS if all_ok else Colors.WARNING
-        self._check_status.setStyleSheet(f"color: {color};")
+        set_semantic_role(self._check_status, "success" if all_ok else "warning")
 
         self._telemetry_connected = all_ok
         self._ingest_mode_combo.setEnabled(all_ok)
@@ -1110,7 +1058,7 @@ class AdvisorView(QWidget):
     def _on_test_llm(self):
         self._test_llm_btn.setEnabled(False)
         self._llm_test_status.setText("Testing…")
-        self._llm_test_status.setStyleSheet(f"color: {Colors.TEXT_SECONDARY};")
+        set_semantic_role(self._llm_test_status, "secondary")
         self._controller.test_llm_async(
             self._provider_combo.currentText(),
             self._model.text().strip() or None,
@@ -1120,8 +1068,7 @@ class AdvisorView(QWidget):
     def _on_llm_test_finished(self, ok: bool, message: str):
         self._test_llm_btn.setEnabled(True)
         self._llm_test_status.setText(message)
-        color = Colors.SUCCESS if ok else Colors.DANGER
-        self._llm_test_status.setStyleSheet(f"color: {color};")
+        set_semantic_role(self._llm_test_status, "success" if ok else "danger")
         if ok:
             self._refresh_credential_status()
 
@@ -1346,10 +1293,7 @@ class AdvisorView(QWidget):
                 f"{hyp.confidence:.2f}" if hyp else "—"
             ))
             approve_btn = QPushButton("Approve")
-            approve_btn.setStyleSheet(
-                f"QPushButton {{ background-color: {Colors.SUCCESS}; color: white; "
-                f"border: none; border-radius: 4px; padding: 4px 12px; }}"
-            )
+            approve_btn.setObjectName("btnSuccess")
             approve_btn.clicked.connect(lambda _, idx=i: self._on_approve(idx))
             self._results_table.setCellWidget(i, 3, approve_btn)
 

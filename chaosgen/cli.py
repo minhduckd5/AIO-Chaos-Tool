@@ -250,7 +250,13 @@ def analyze(
         f"Log streams: {len(dataset.logs)}"
     )
 
-    clusters, summaries, feature_rows = analyze_dataset(dataset, model_path=model_path, settings=settings)
+    # MODIFIED: layout/model notices print as a clear yellow line, never a traceback
+    clusters, summaries, feature_rows = analyze_dataset(
+        dataset,
+        model_path=model_path,
+        settings=settings,
+        notice_cb=lambda msg: click.secho(f"[ChaosGen] {msg}", fg="yellow"),
+    )
     click.secho(f"\n=== Anomaly Analysis ({source}) ===", bold=True)
     click.echo(f"  Feature windows: {feature_rows}")
     click.echo(f"  Anomaly clusters: {len(clusters)}")
@@ -536,7 +542,10 @@ def plot_anomalies(export_path, model_path, output_path, config_path):
     """Plot the anomaly timeline, highlighting anomaly clusters over time."""
     from chaosgen.config.settings import load_settings
     from chaosgen.ingestion.export_loader import ExportLoader
-    from chaosgen.ml.feature_engineering import FeatureEngineer
+    from chaosgen.ml.feature_engineering import (
+        FeatureEngineer,
+        FeatureLayoutMismatchError,
+    )
     from chaosgen.ml.anomaly_detector import AnomalyDetector
     from chaosgen.ml.canonical_features import apply_canonical_features
 
@@ -561,7 +570,14 @@ def plot_anomalies(export_path, model_path, output_path, config_path):
 
     click.echo(f"[ChaosGen] Loading pre-trained model from: {model_path}")
     detector = AnomalyDetector()
-    detector.load_model(model_path)
+    # MODIFIED: legacy wide-layout models cannot score entity-keyed features;
+    # report it plainly and refit on this export instead of raising.
+    try:
+        detector.load_model(model_path, expected_layout=fe.layout)
+    except FeatureLayoutMismatchError as exc:
+        click.secho(f"[ChaosGen] {exc}", fg="yellow")
+        detector = AnomalyDetector()
+        detector.fit(features)
 
     click.echo(f"[ChaosGen] Generating timeline plot at: {output_path}")
     detector.plot_timeline(features, output_path)
@@ -915,7 +931,10 @@ def generate(
                         step=settings.telemetry.step,
                     )
             clusters, anomaly_summaries, _ = analyze_dataset(
-                dataset, model_path=model_path, settings=settings,
+                dataset,
+                model_path=model_path,
+                settings=settings,
+                notice_cb=lambda msg: click.secho(f"  {msg}", fg="yellow"),
             )
         except Exception as exc:
             click.secho(f"  Telemetry unavailable ({exc}), cannot run pipeline.", fg="red")
@@ -1212,6 +1231,26 @@ def promote(report_path, approved_by, criteria_file, incident_id, experiment, ve
 # ---------------------------------------------------------------------------
 
 
+def _resolve_audit_actor_cli(config: str | None = None) -> str:
+    """
+    Resolve the audit actor for interactive CLI commands (A8).
+
+    Prompts once, persists to ``operator_name``, and stops the command if the
+    operator declines — audit rows are never attributed to a default identity.
+    """
+    from chaosgen.storage.audit import AuditActorRequired, resolve_actor
+
+    try:
+        return resolve_actor(
+            prompt=lambda: click.prompt(
+                "Operator name for audit trail", default="", show_default=False
+            ),
+            settings_path=config,
+        )
+    except AuditActorRequired as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 @main.command()
 @click.option("--dry-run", is_flag=True, default=False, help="Validate without executing.")
 @click.option("--approve-all", is_flag=True, default=False, help="Skip HITL gate (requires --force).")
@@ -1238,6 +1277,14 @@ def run(dry_run, approve_all, force, config):
     if approve_all and not force:
         click.secho("--approve-all requires --force to bypass HITL gate. Add --force to confirm.", fg="red")
         return
+
+    # A4/A8: attribute every approval to a real operator; --approve-all --force
+    # is recorded as its own path so the audit trail separates it from HITL.
+    actor = _resolve_audit_actor_cli(config)
+    orchestrator.set_audit_context(
+        actor=actor,
+        path_used="cli_approve_all_force" if (approve_all and force) else None,
+    )
 
     for i, exp in enumerate(orchestrator.pending_experiments):
         if approve_all and force:
@@ -1868,6 +1915,23 @@ def config_set_key(key_name, value):
     except ValueError as exc:
         click.secho(str(exc), fg="red")
         sys.exit(1)
+
+
+@config_group.command("set-operator")
+@click.argument("name")
+def config_set_operator(name):
+    """Set the audit actor (operator identity) used by the audit trail."""
+    from chaosgen.config.paths import SETTINGS_FILE
+    from chaosgen.config.settings import load_settings, save_settings
+
+    actor = (name or "").strip()
+    if not actor:
+        raise click.ClickException("operator name cannot be empty")
+
+    settings = load_settings()
+    settings.operator_name = actor
+    save_settings(settings)
+    click.secho(f"Operator '{actor}' saved to {SETTINGS_FILE}", fg="green")
 
 
 @config_group.command("list-keys")

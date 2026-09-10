@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QStackedWidget, QMessageBox,
 )
 
-from chaosgen.gui.theme import Colors, Fonts, Spacing
+from chaosgen.gui.theme import Colors, Spacing, set_semantic_role
 from chaosgen.schemas.faults import (
     ChaosExperiment, TargetSpec, TargetType, FaultType,
     NetworkFaultSpec, ProcessFaultSpec, ResourceFaultSpec, FaultSpec,
@@ -97,29 +97,20 @@ class ExperimentsView(QWidget):
         self._phase_labels: dict[str, QLabel] = {}
         for name in ("Pending", "Injecting", "Running", "Finished"):
             lbl = QLabel(name)
-            lbl.setStyleSheet(
-                f"color: {Colors.TEXT_MUTED}; padding: 4px 10px; "
-                f"border: 1px solid {Colors.BORDER}; border-radius: 4px;"
-            )
+            # MODIFIED: phase token via objectName (theme global QSS)
+            lbl.setObjectName("phaseIdle")
             self._phase_labels[name] = lbl
             life.addWidget(lbl)
         life.addStretch()
 
         self._halt_btn = QPushButton("HALT / ABORT")
         self._halt_btn.setEnabled(False)
-        self._halt_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {Colors.DANGER}; color: white; "
-            f"border: none; border-radius: 6px; padding: 10px 20px; font-weight: bold; }}"
-            f"QPushButton:disabled {{ background-color: {Colors.BG_HOVER}; color: {Colors.TEXT_MUTED}; }}"
-        )
+        self._halt_btn.setObjectName("btnDanger")
         self._halt_btn.clicked.connect(self._on_halt)
         life.addWidget(self._halt_btn)
 
         self._open_eval_btn = QPushButton("Open Evaluation outcome")
-        self._open_eval_btn.setStyleSheet(
-            f"QPushButton {{ background: transparent; color: {Colors.ACCENT}; "
-            f"border: 1px solid {Colors.ACCENT}; border-radius: 6px; padding: 10px 16px; }}"
-        )
+        self._open_eval_btn.setObjectName("btnLink")
         self._open_eval_btn.clicked.connect(
             lambda: self.navigate_requested.emit("evaluation")
         )
@@ -127,9 +118,7 @@ class ExperimentsView(QWidget):
         layout.addLayout(life)
 
         self._lifecycle_hint = QLabel("State: idle")
-        self._lifecycle_hint.setStyleSheet(
-            f"color: {Colors.TEXT_SECONDARY}; font-size: {Fonts.SIZE_SMALL}px;"
-        )
+        self._lifecycle_hint.setObjectName("textSecondary")
         layout.addWidget(self._lifecycle_hint)
 
         splitter = QSplitter(Qt.Horizontal)
@@ -139,16 +128,10 @@ class ExperimentsView(QWidget):
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         list_header = QLabel("History")
-        list_header.setStyleSheet(
-            f"color: {Colors.TEXT_SECONDARY}; font-size: 11px; font-weight: bold; letter-spacing: 1px;"
-        )
+        list_header.setObjectName("listSectionHeader")
         left_layout.addWidget(list_header)
         self._history_list = QListWidget()
-        self._history_list.setStyleSheet(
-            f"QListWidget {{ background-color: {Colors.BG_CARD}; border: 1px solid {Colors.BORDER}; }}"
-            f"QListWidget::item {{ padding: 8px; }}"
-            f"QListWidget::item:selected {{ background-color: {Colors.BG_SELECTED}; }}"
-        )
+        self._history_list.setObjectName("historyList")
         left_layout.addWidget(self._history_list)
         splitter.addWidget(left)
 
@@ -156,7 +139,7 @@ class ExperimentsView(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        scroll.setObjectName("transparentScroll")
 
         form_container = QWidget()
         form_layout = QVBoxLayout(form_container)
@@ -164,45 +147,29 @@ class ExperimentsView(QWidget):
         form_layout.setSpacing(Spacing.LG)
 
         form_header = QLabel("Create Experiment")
-        form_header.setStyleSheet(
-            f"color: {Colors.TEXT_SECONDARY}; font-size: 11px; font-weight: bold; letter-spacing: 1px;"
-        )
+        form_header.setObjectName("listSectionHeader")
         form_layout.addWidget(form_header)
         self._executor_badge = QLabel("Executor: —")
-        self._executor_badge.setStyleSheet(
-            f"color: {Colors.TEXT_MUTED}; font-size: 11px;"
-        )
+        self._executor_badge.setObjectName("mutedHint")
         form_layout.addWidget(self._executor_badge)
 
         # --- START MODIFICATION ---
         # Staged Scenario card (hidden until Catalog pushes a scenario)
         # --- END MODIFICATION ---
         self._staged_card = self._make_card("Staged Scenario (from Catalog)")
-        self._staged_card.setStyleSheet(
-            f"QWidget#cardWidget {{ border: 1px solid {Colors.ACCENT}; "
-            f"background-color: {Colors.BG_CARD}; border-radius: 6px; }}"
-        )
+        self._staged_card.setObjectName("cardAccent")
         staged_inner = QVBoxLayout()
         self._staged_info_label = QLabel("No scenario staged.")
-        self._staged_info_label.setStyleSheet(
-            f"color: {Colors.TEXT_PRIMARY}; font-size: 12px;"
-        )
+        self._staged_info_label.setObjectName("bodyPrimary")
         self._staged_info_label.setWordWrap(True)
         staged_inner.addWidget(self._staged_info_label)
 
         staged_btn_row = QHBoxLayout()
         self._exec_staged_btn = QPushButton("Execute Staged Experiment")
-        self._exec_staged_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {Colors.ACCENT}; color: white; "
-            f"font-weight: bold; border-radius: 4px; padding: 8px 16px; }}"
-            f"QPushButton:hover {{ background-color: {Colors.ACCENT_HOVER}; }}"
-        )
+        self._exec_staged_btn.setObjectName("btnPrimary")
         self._exec_staged_btn.clicked.connect(self._on_submit)
         self._dismiss_staged_btn = QPushButton("Dismiss")
-        self._dismiss_staged_btn.setStyleSheet(
-            f"QPushButton {{ background: transparent; color: {Colors.TEXT_MUTED}; "
-            f"border: 1px solid {Colors.BORDER}; border-radius: 4px; padding: 8px 12px; }}"
-        )
+        self._dismiss_staged_btn.setObjectName("btnGhost")
         self._dismiss_staged_btn.clicked.connect(lambda: self._staged_card.setVisible(False))
         staged_btn_row.addWidget(self._exec_staged_btn)
         staged_btn_row.addWidget(self._dismiss_staged_btn)
@@ -307,7 +274,7 @@ class ExperimentsView(QWidget):
             "(stress-ng / process kill / systemd). No live mutation."
         )
         host_help.setWordWrap(True)
-        host_help.setStyleSheet(f"color: {Colors.TEXT_MUTED}; font-size: 11px;")
+        host_help.setObjectName("mutedHint")
         host_fl.addRow("Target Host / IP:", self._host_target)
         host_fl.addRow("SSH Port:", self._host_ssh_port)
         host_fl.addRow("SSH User:", self._host_ssh_user)
@@ -331,7 +298,7 @@ class ExperimentsView(QWidget):
             "No cloud credentials / runtime driver in thesis scope."
         )
         faas_help.setWordWrap(True)
-        faas_help.setStyleSheet(f"color: {Colors.TEXT_MUTED}; font-size: 11px;")
+        faas_help.setObjectName("mutedHint")
         faas_fl.addRow("Provider:", self._faas_provider)
         faas_fl.addRow("Function ARN / Name:", self._faas_function)
         faas_fl.addRow("", faas_help)
@@ -344,7 +311,7 @@ class ExperimentsView(QWidget):
         conn_outer.addWidget(self._dry_run)
 
         self._conn_status = QLabel("Status: not tested — required before Create (Kubernetes)")
-        self._conn_status.setStyleSheet(f"color: {Colors.TEXT_MUTED};")
+        set_semantic_role(self._conn_status, "muted")
         conn_outer.addWidget(self._conn_status)
         conn_card.layout().addLayout(conn_outer)
         form_layout.addWidget(conn_card)
@@ -380,7 +347,7 @@ class ExperimentsView(QWidget):
             "Each fault row: pick targets (Ctrl/Cmd+click). "
             "CTK cascade = one action per target with optional pause."
         )
-        self._svc_hint.setStyleSheet(f"color: {Colors.TEXT_MUTED}; font-size: 11px;")
+        self._svc_hint.setObjectName("mutedHint")
         self._svc_hint.setWordWrap(True)
         fault_header.addRow("Namespace:", self._target_ns)
         fault_header.addRow("Label key:", self._label_key)
@@ -424,11 +391,7 @@ class ExperimentsView(QWidget):
 
         # Submit
         self._submit_btn = QPushButton("Create Experiment")
-        self._submit_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {Colors.ACCENT}; color: white; "
-            f"border: none; border-radius: 6px; padding: 10px 24px; font-weight: bold; }}"
-            f"QPushButton:hover {{ background-color: {Colors.ACCENT_HOVER}; }}"
-        )
+        self._submit_btn.setObjectName("btnPrimary")
         self._submit_btn.clicked.connect(self._on_submit)
         form_layout.addWidget(self._submit_btn)
 
@@ -496,16 +459,16 @@ class ExperimentsView(QWidget):
             self._conn_status.setText(
                 "Status: P1 Dry-run Mode — Generates experiment manifest (no runtime mutation)"
             )
-            self._conn_status.setStyleSheet(f"color: {Colors.WARNING};")
+            set_semantic_role(self._conn_status, 'warning')
         elif env == "kubernetes":
             self._conn_status.setText("Status: not tested — required before Create (Kubernetes)")
-            self._conn_status.setStyleSheet(f"color: {Colors.TEXT_MUTED};")
+            set_semantic_role(self._conn_status, 'muted')
         elif env in _DOCKER_ENVS:
             self._conn_status.setText("Status: not tested — Test Docker connection recommended")
-            self._conn_status.setStyleSheet(f"color: {Colors.TEXT_MUTED};")
+            set_semantic_role(self._conn_status, 'muted')
         else:
             self._conn_status.setText("Status: not tested")
-            self._conn_status.setStyleSheet(f"color: {Colors.TEXT_MUTED};")
+            set_semantic_role(self._conn_status, 'muted')
 
     def _on_env_changed(self, *_args) -> None:
         # --- START MODIFICATION ---
@@ -519,7 +482,7 @@ class ExperimentsView(QWidget):
             self._conn_status.setText(
                 "Status: P1 Dry-run Mode — Generates experiment manifest (no runtime mutation)"
             )
-            self._conn_status.setStyleSheet(f"color: {Colors.WARNING};")
+            set_semantic_role(self._conn_status, 'warning')
         else:
             self._dry_run.setEnabled(True)
             self._invalidate_conn()
@@ -663,7 +626,7 @@ class ExperimentsView(QWidget):
         if not (self._kubeconfig.text().strip()):
             self._conn_ok = False
             self._conn_status.setText("Status: FAIL — kubeconfig path required")
-            self._conn_status.setStyleSheet(f"color: {Colors.DANGER};")
+            set_semantic_role(self._conn_status, 'danger')
             return
         result = mod.execute("test_connection", {})
         if result.get("success"):
@@ -671,13 +634,13 @@ class ExperimentsView(QWidget):
             backend = result.get("backend") or ""
             via = " via SSH bastion" if result.get("bastion") else ""
             self._conn_status.setText(f"Status: OK — cluster reachable ({backend}){via}")
-            self._conn_status.setStyleSheet(f"color: {Colors.SUCCESS};")
+            set_semantic_role(self._conn_status, 'success')
             self._controller.log_message.emit(result.get("message") or "connection OK")
         else:
             self._conn_ok = False
             err = result.get("error") or result.get("message") or "failed"
             self._conn_status.setText(f"Status: FAIL — {err}")
-            self._conn_status.setStyleSheet(f"color: {Colors.DANGER};")
+            set_semantic_role(self._conn_status, 'danger')
             self._controller.log_message.emit(f"Test connection failed: {err}")
 
     def _on_test_docker_connection(self) -> None:
@@ -696,7 +659,7 @@ class ExperimentsView(QWidget):
         if mod is None:
             self._conn_ok = False
             self._conn_status.setText("Status: FAIL — pumba module missing")
-            self._conn_status.setStyleSheet(f"color: {Colors.DANGER};")
+            set_semantic_role(self._conn_status, 'danger')
             return
 
         # Refresh module config from form
@@ -719,21 +682,21 @@ class ExperimentsView(QWidget):
         except Exception as exc:
             self._conn_ok = False
             self._conn_status.setText(f"Status: FAIL — {exc}")
-            self._conn_status.setStyleSheet(f"color: {Colors.DANGER};")
+            set_semantic_role(self._conn_status, 'danger')
             return
 
         if ok:
             self._conn_ok = True
             host = self._docker_host.text().strip() or "(default socket)"
             self._conn_status.setText(f"Status: OK — Docker reachable ({host})")
-            self._conn_status.setStyleSheet(f"color: {Colors.SUCCESS};")
+            set_semantic_role(self._conn_status, 'success')
             self._controller.log_message.emit(f"Docker connection OK: {host}")
         else:
             self._conn_ok = False
             self._conn_status.setText(
                 "Status: FAIL — Docker engine not reachable (check host / Desktop)"
             )
-            self._conn_status.setStyleSheet(f"color: {Colors.DANGER};")
+            set_semantic_role(self._conn_status, 'danger')
             self._controller.log_message.emit("Docker Test connection failed")
 
     def _on_refresh_contexts(self) -> None:
@@ -1191,17 +1154,14 @@ class ExperimentsView(QWidget):
         card_layout.setContentsMargins(Spacing.LG, Spacing.LG, Spacing.LG, Spacing.LG)
         card_layout.setSpacing(Spacing.SM)
         header = QLabel(title)
-        header.setStyleSheet(
-            f"color: {Colors.TEXT_PRIMARY}; font-weight: bold; font-size: {Fonts.SIZE_LARGE}px;"
-        )
+        # MODIFIED: cardTitle objectName from theme
+        header.setObjectName("cardTitle")
         card_layout.addWidget(header)
         return card
 
     def _style_input(self, widget):
-        widget.setStyleSheet(
-            f"background-color: {Colors.BG_INPUT}; color: {Colors.TEXT_PRIMARY}; "
-            f"border: 1px solid {Colors.BORDER}; border-radius: 4px; padding: 6px;"
-        )
+        # MODIFIED: formInput objectName from theme (no inline QSS)
+        widget.setObjectName("formInput")
 
     def _update_params(self, fault_type):
         # Kept for compatibility; multi-fault rows carry their own params.
@@ -1412,7 +1372,7 @@ class ExperimentsView(QWidget):
             elif verdict == "FAIL":
                 item.setForeground(QColor(Colors.DANGER))
             elif verdict == "PARTIAL":
-                item.setForeground(QColor(Colors.WARNING) if hasattr(Colors, "WARNING") else QColor("#f59e0b"))
+                item.setForeground(QColor(Colors.WARNING))
             self._history_list.addItem(item)
 
     def load_staged_scenario(self, experiment, metadata: dict | None = None) -> None:
@@ -1523,17 +1483,13 @@ class ExperimentsView(QWidget):
 
     def _set_lifecycle_phase(self, phase: str) -> None:
         self._lifecycle_phase = phase
-        active = (
-            f"color: {Colors.TEXT_PRIMARY}; background-color: {Colors.BG_SELECTED}; "
-            f"padding: 4px 10px; border: 1px solid {Colors.ACCENT}; border-radius: 4px; "
-            f"font-weight: bold;"
-        )
-        idle = (
-            f"color: {Colors.TEXT_MUTED}; padding: 4px 10px; "
-            f"border: 1px solid {Colors.BORDER}; border-radius: 4px;"
-        )
+        # MODIFIED: phaseActive / phaseIdle objectNames (theme global QSS)
         for name, lbl in self._phase_labels.items():
-            lbl.setStyleSheet(active if name == phase else idle)
+            lbl.setObjectName("phaseActive" if name == phase else "phaseIdle")
+            style = lbl.style()
+            if style is not None:
+                style.unpolish(lbl)
+                style.polish(lbl)
 
     def _on_halt(self):
         try:

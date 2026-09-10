@@ -24,7 +24,7 @@ import os
 import pandas as pd
 from datetime import datetime
 from chaosgen.ingestion.window import resolve_collection_window
-from chaosgen.ml.feature_engineering import FeatureEngineer
+from chaosgen.ml.feature_engineering import FeatureEngineer, FeatureLayoutMismatchError
 from chaosgen.ml.anomaly_detector import AnomalyDetector
 from chaosgen.ml.canonical_features import apply_canonical_features
 from chaosgen.ml.cluster_labels import ClusterLabelStore
@@ -229,14 +229,25 @@ def run_gui_analysis_pipeline(
         # MODIFIED: pass AnomalySettings so GUI auto/fixed mode actually applies
         detector = AnomalyDetector(settings=settings.anomaly)
         model_path = request.model_path or settings.anomaly.default_model_path
+        label_store = None
         if model_path and os.path.exists(model_path):
-            detector.load_model(model_path)
-            label_store = ClusterLabelStore.sidecar_for_model(model_path)
-            if label_store.path.exists():
-                label_store.load()
+            # --- START MODIFICATION ---
+            # Legacy wide-layout models are rejected rather than zero-aligned;
+            # the GUI reports it on the progress strip and refits in place.
+            try:
+                detector.load_model(model_path, expected_layout=settings.features.layout)
+                label_store = ClusterLabelStore.sidecar_for_model(model_path)
+                if label_store.path.exists():
+                    label_store.load()
+            except FeatureLayoutMismatchError as exc:
+                if progress_cb:
+                    progress_cb(f"{exc}")
+                detector = AnomalyDetector(settings=settings.anomaly)
+                detector.fit(features)
+                label_store = None
+            # --- END MODIFICATION ---
         else:
             detector.fit(features)
-            label_store = None
 
         clusters, summaries = detector.detect_and_summarize(features)
         if label_store is not None:

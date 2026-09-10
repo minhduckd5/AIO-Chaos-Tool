@@ -98,8 +98,25 @@ class TestFeatureEngineer:
         dataset = _make_dataset()
         fe = FeatureEngineer(window_size=300, step=60)
         df = fe.transform(dataset)
-        log_cols = [c for c in df.columns if c in ("log_volume", "error_count", "error_rate")]
+        log_cols = [
+            c for c in df.columns
+            if c.startswith(("logline_volume", "logline_error_rate"))
+        ]
         assert len(log_cols) > 0
+        # Log-line features attribute to the stream's entity, not the whole cluster.
+        svc0 = df.xs("svc-0", level="service")
+        assert svc0["logline_error_count__mean"].max() > 0
+
+    def test_wide_layout_still_available(self):
+        dataset = _make_dataset()
+        fe = FeatureEngineer(window_size=300, step=60, layout="wide")
+        df = fe.transform(dataset)
+        assert not isinstance(df.index, pd.MultiIndex)
+        assert any("svc-0" in str(c) for c in df.columns)
+
+    def test_unknown_layout_rejected(self):
+        with pytest.raises(ValueError, match="Unknown feature layout"):
+            FeatureEngineer(layout="long")
 
 
 class TestAnomalyDetector:

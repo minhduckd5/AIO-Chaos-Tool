@@ -10,8 +10,18 @@ from PySide6.QtWidgets import (
     QSizePolicy, QScrollArea, QFrame,
 )
 
-from chaosgen.gui.theme import Colors, Fonts, Spacing
+from chaosgen.gui.theme import Colors, Spacing, set_semantic_role
 from chaosgen.gui.widgets.status_dot import StatusDot
+
+# Map Colors.* hex (legacy call sites) → semantic roles for SummaryCard.
+_COLOR_TO_ROLE = {
+    Colors.SUCCESS: "success",
+    Colors.WARNING: "warning",
+    Colors.DANGER: "danger",
+    Colors.TEXT_SECONDARY: "secondary",
+    Colors.TEXT_PRIMARY: "primary",
+    Colors.ACCENT: "accent",
+}
 
 
 class SummaryCard(QWidget):
@@ -28,9 +38,10 @@ class SummaryCard(QWidget):
         layout.setSpacing(Spacing.XS)
 
         self._value_label = QLabel(value)
+        # MODIFIED: chrome objectName + semanticRole (set_semantic_role does unpolish/polish)
         self._value_label.setObjectName("cardValue")
-        self._value_label.setStyleSheet(f"color: {color};")
         layout.addWidget(self._value_label)
+        self.set_color(color)
 
         self._text_label = QLabel(label)
         self._text_label.setObjectName("cardLabel")
@@ -40,7 +51,8 @@ class SummaryCard(QWidget):
         self._value_label.setText(value)
 
     def set_color(self, color: str):
-        self._value_label.setStyleSheet(f"color: {color};")
+        role = _COLOR_TO_ROLE.get(color, "primary")
+        set_semantic_role(self._value_label, role)
 
 
 class ModuleHealthRow(QWidget):
@@ -56,7 +68,7 @@ class ModuleHealthRow(QWidget):
         layout.addWidget(self.dot)
 
         label = QLabel(name)
-        label.setStyleSheet(f"color: {Colors.TEXT_PRIMARY}; font-size: {Fonts.SIZE_NORMAL}px;")
+        label.setObjectName("moduleHealthName")
         layout.addWidget(label)
         layout.addStretch()
 
@@ -81,7 +93,7 @@ class DashboardView(QWidget):
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        scroll.setObjectName("transparentScroll")
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -120,31 +132,19 @@ class DashboardView(QWidget):
         # Next-action deep-links (one page = one decision)
         # --- END MODIFICATION ---
         actions_header = QLabel("Next actions")
-        actions_header.setStyleSheet(
-            f"color: {Colors.TEXT_PRIMARY}; font-size: {Fonts.SIZE_LARGE}px; "
-            f"font-weight: bold; margin-top: {Spacing.MD}px;"
-        )
+        actions_header.setObjectName("subsectionHeader")
         layout.addWidget(actions_header)
 
         actions = QHBoxLayout()
         actions.setSpacing(Spacing.MD)
-        btn_style = (
-            f"QPushButton {{ background-color: {Colors.ACCENT}; color: white; "
-            f"border: none; border-radius: 6px; padding: 10px 18px; font-weight: bold; }}"
-            f"QPushButton:hover {{ background-color: {Colors.ACCENT_HOVER}; }}"
-        )
-        secondary = (
-            f"QPushButton {{ background: transparent; color: {Colors.ACCENT}; "
-            f"border: 1px solid {Colors.ACCENT}; border-radius: 6px; padding: 10px 18px; }}"
-        )
         open_telem = QPushButton("Open Telemetry")
-        open_telem.setStyleSheet(btn_style)
+        open_telem.setObjectName("btnPrimary")
         open_telem.clicked.connect(lambda: self.navigate_requested.emit("advisor"))
         open_exp = QPushButton("Open Experiments")
-        open_exp.setStyleSheet(secondary)
+        open_exp.setObjectName("btnLink")
         open_exp.clicked.connect(lambda: self.navigate_requested.emit("experiments"))
         open_eval = QPushButton("View Outcome")
-        open_eval.setStyleSheet(secondary)
+        open_eval.setObjectName("btnLink")
         open_eval.clicked.connect(lambda: self.navigate_requested.emit("evaluation"))
         actions.addWidget(open_telem)
         actions.addWidget(open_exp)
@@ -153,10 +153,7 @@ class DashboardView(QWidget):
         layout.addLayout(actions)
 
         health_header = QLabel("Module Health")
-        health_header.setStyleSheet(
-            f"color: {Colors.TEXT_PRIMARY}; font-size: {Fonts.SIZE_LARGE}px; "
-            f"font-weight: bold; margin-top: {Spacing.MD}px;"
-        )
+        health_header.setObjectName("subsectionHeader")
         layout.addWidget(health_header)
 
         self._health_container = QWidget()
@@ -218,7 +215,7 @@ class DashboardView(QWidget):
             self._health_layout.addWidget(row)
         if not modules:
             empty = QLabel("No modules loaded")
-            empty.setStyleSheet(f"color: {Colors.TEXT_MUTED}; padding: {Spacing.MD}px;")
+            empty.setObjectName("emptyStateHint")
             self._health_layout.addWidget(empty)
 
     @Slot(str)

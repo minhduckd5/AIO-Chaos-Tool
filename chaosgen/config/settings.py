@@ -152,7 +152,11 @@ class FeatureSettings(BaseModel):
     resample_step_seconds: int = Field(
         default=60, ge=10, le=1800, alias="step_seconds"
     )
-    zscore_threshold: float = Field(default=3.0, ge=0.5, le=10.0)
+    zscore_threshold: float = Field(default=5.0, ge=0.5, le=10.0)
+    # MODIFIED: entity-keyed long format — service identity in the row index, not
+    # in column names, so the trained column set is window-independent.
+    # "wide" is the legacy dynamic-column layout, kept only as a debug escape hatch.
+    layout: Literal["entity_keyed", "wide"] = "entity_keyed"
     # MODIFIED: canonical v1 — signal-type pooling for stable train/detect schema
     canonical_enabled: bool = False
     canonical_rules_path: str | None = "examples/canonical_features.yaml"
@@ -396,6 +400,9 @@ class HistorySettings(BaseModel):
 
 class ChaosGenSettings(BaseModel):
     hints: UserHints = Field(default_factory=UserHints)
+    # Audit actor identity (A8): prompted once, then persisted. Never defaulted
+    # silently — an unattributable audit trail defeats the audit log.
+    operator_name: str | None = None
     llm_provider: str = "ollama"
     llm_model: str | None = None
     developer_mode: bool = False
