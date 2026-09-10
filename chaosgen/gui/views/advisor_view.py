@@ -498,6 +498,15 @@ class AdvisorView(QWidget):
         self._summary_label.setObjectName("textPrimary")
         s3.addWidget(self._summary_label)
 
+        # --- START MODIFICATION ---
+        # Honest Approve context: never invent a green env when unset.
+        self._exec_context_label = QLabel()
+        self._exec_context_label.setWordWrap(True)
+        self._exec_context_label.setObjectName("textMuted")
+        set_semantic_role(self._exec_context_label, "muted")
+        s3.addWidget(self._exec_context_label)
+        # --- END MODIFICATION ---
+
         self._outer_splitter = QSplitter(Qt.Vertical)
         self._tabs = QTabWidget()
 
@@ -1187,6 +1196,7 @@ class AdvisorView(QWidget):
         self._stack.setCurrentIndex(2)
         self._refresh_analyze_guard()
         self._step_label.setText("Step 3 of 3 — Review results")
+        self._refresh_execution_context()
 
         if result:
             window_txt = ""
@@ -1659,7 +1669,26 @@ class AdvisorView(QWidget):
             lines.append(f"SCI: {sci.weighted_score:.4f}")
         self._detail_text.setPlainText("\n".join(lines))
 
+    def _refresh_execution_context(self) -> None:
+        """Show inject/connect facts Approve will use — or admit undetermined."""
+        # --- START MODIFICATION ---
+        from chaosgen.config.settings import load_settings
+        from chaosgen.gui.execution_context import format_execution_context
+
+        try:
+            text = format_execution_context(load_settings())
+        except Exception as exc:
+            text = f"Execution environment not determined ({exc})."
+        self._exec_context_label.setText(text)
+        lowered = text.lower()
+        if "not determined" in lowered:
+            set_semantic_role(self._exec_context_label, "warning")
+        else:
+            set_semantic_role(self._exec_context_label, "muted")
+        # --- END MODIFICATION ---
+
     def _on_approve(self, index: int):
+        self._refresh_execution_context()
         self._controller.approve_and_run(index)
         self._controller.log_message.emit(f"Approved scenario index={index}")
 

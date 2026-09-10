@@ -713,7 +713,7 @@ class ChaosOrchestrator:
 
     # --- State Machine Callbacks ---
 
-    def run_experiment(self, experiment: ChaosExperiment):
+    def run_experiment(self, experiment: ChaosExperiment) -> Dict[str, Any]:
         """Entry point to run a full chaos experiment."""
         self.current_experiment = experiment
         if not self._suite_mode:
@@ -732,6 +732,11 @@ class ChaosOrchestrator:
         self._audit_path = "operator_direct"
         self._audit_emit("hatch_used", path_used="operator_direct")
         self.start_experiment()
+        return {
+            "ran": True,
+            "outcome": self.last_outcome,
+            "experiment": experiment.name,
+        }
 
     def run_experiment_suite(
         self,
@@ -1321,16 +1326,25 @@ class ChaosOrchestrator:
         )
         self.submit_for_approval()
 
-    def approve_and_run(self, experiment_index: int = 0) -> None:
-        """Approve a specific pending experiment and execute it."""
+    def approve_and_run(self, experiment_index: int = 0) -> Dict[str, Any]:
+        """Approve a specific pending experiment and execute it.
+
+        Returns a small outcome dict for GUI toast honesty (ran/outcome/reason).
+        """
         if not self.pending_experiments:
             self.logger.warning("No pending experiments to approve.")
-            return
+            return {"ran": False, "outcome": None, "reason": "no pending experiments"}
 
         if experiment_index >= len(self.pending_experiments):
             self.logger.error("Invalid experiment index: %d", experiment_index)
-            return
+            return {
+                "ran": False,
+                "outcome": None,
+                "reason": f"invalid experiment index {experiment_index}",
+            }
 
+        # Clear stale PASS from a previous run before this approve cycle.
+        self.last_outcome = None
         self.current_experiment = self.pending_experiments[experiment_index]
         self._current_experiment_db_id = self._experiment_db_ids.get(
             self.current_experiment.name
@@ -1343,6 +1357,13 @@ class ChaosOrchestrator:
             self._run_id = str(uuid.uuid4())
         self._audit_emit("approved")
         self.approve_experiment()
+        return {
+            "ran": True,
+            "outcome": self.last_outcome,
+            "experiment": self.current_experiment.name
+            if self.current_experiment
+            else None,
+        }
 
     def reject_all(self) -> None:
         """Reject all pending experiments and return to idle."""

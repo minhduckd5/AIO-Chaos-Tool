@@ -55,7 +55,9 @@ class ScenarioGenerator:
                     description=hyp.rationale,
                     target=target,
                     faults=[fault],
-                    steady_state_check={"http_health": f"http://{hyp.target_hint}:8080/health"},
+                    # Operator-side Prom default via orchestrator._default_steady_state
+                    # when None (not cluster DNS http://{hint}:8080/health).
+                    steady_state_check=None,
                     rollback=True,
                 )
                 self.blast_radius.validate_experiment(experiment)

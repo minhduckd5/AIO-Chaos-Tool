@@ -11,6 +11,38 @@ from typing import Any, Callable, Dict, List, Optional
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 
+def experiment_finish_payload(
+    result: Any,
+    last_outcome: Optional[str],
+    *,
+    label: str,
+) -> tuple[bool, str]:
+    """
+    Derive toast/log (ok, message) from an async experiment call.
+
+    Prefer an explicit worker return dict; fall back to orchestrator.last_outcome.
+    Early no-op (ran=False) must never surface as PASS from a prior run.
+    """
+    # --- START MODIFICATION ---
+    if isinstance(result, dict) and result.get("ran") is False:
+        reason = result.get("reason") or "no experiment ran"
+        return False, f"{label}: {reason}"
+
+    outcome = None
+    if isinstance(result, dict) and result.get("outcome") is not None:
+        outcome = result.get("outcome")
+    elif last_outcome is not None:
+        outcome = last_outcome
+
+    if outcome is None or str(outcome).strip() == "":
+        return False, f"{label}: UNKNOWN (no outcome recorded)"
+
+    text = str(outcome).strip().upper()
+    ok = text == "PASS"
+    return ok, f"{label} {text}"
+    # --- END MODIFICATION ---
+
+
 class WorkerSignals(QObject):
     """Signals emitted by AsyncWorker."""
     finished = Signal(object)
@@ -138,9 +170,14 @@ class AppController(QObject):
             return
         self.experiment_started.emit(experiment.name)
         worker = AsyncWorker(self.orchestrator.run_experiment, experiment)
+        # --- START MODIFICATION ---
+        # Toast must reflect last_outcome (steady-state FAIL is not an exception).
         worker.signals.finished.connect(
-            lambda _: self.experiment_finished.emit(True, "Experiment completed")
+            lambda result: self._emit_experiment_finished(
+                result, label="Experiment"
+            )
         )
+        # --- END MODIFICATION ---
         worker.signals.error.connect(
             lambda err: self.experiment_finished.emit(False, err)
         )
@@ -285,13 +322,28 @@ class AppController(QObject):
         if not self.ensure_audit_actor():
             return
         worker = AsyncWorker(self.orchestrator.approve_and_run, index)
+        # --- START MODIFICATION ---
+        # Never hardcode success: steady-state abort sets last_outcome=FAIL
+        # without raising, so the finished signal still fires.
         worker.signals.finished.connect(
-            lambda _: self.experiment_finished.emit(True, "Approved experiment completed")
+            lambda result: self._emit_experiment_finished(
+                result, label="Approved experiment"
+            )
         )
+        # --- END MODIFICATION ---
         worker.signals.error.connect(
             lambda err: self.experiment_finished.emit(False, err)
         )
         self._spawn(worker)
+
+    def _emit_experiment_finished(self, result: Any, *, label: str) -> None:
+        """Map orchestrator outcome to experiment_finished(ok, message)."""
+        ok, message = experiment_finish_payload(
+            result,
+            getattr(self.orchestrator, "last_outcome", None),
+            label=label,
+        )
+        self.experiment_finished.emit(ok, message)
 
     def reject_all(self):
         if not self.ensure_audit_actor():
