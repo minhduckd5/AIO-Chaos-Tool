@@ -25,6 +25,10 @@ class EvaluationView(QWidget):
         super().__init__(parent)
         self._controller = controller
         self._init_ui()
+        # MODIFIED: refresh after Approve/Create so demo does not show stale empty state
+        self._controller.experiment_finished.connect(
+            lambda _ok, _msg: self._refresh_operational()
+        )
         self._refresh_operational()
 
     def _init_ui(self):

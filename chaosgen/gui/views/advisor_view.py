@@ -505,6 +505,12 @@ class AdvisorView(QWidget):
         self._exec_context_label.setObjectName("textMuted")
         set_semantic_role(self._exec_context_label, "muted")
         s3.addWidget(self._exec_context_label)
+
+        # On-page Approve outcome (do not rely only on bottom OUTPUT log).
+        self._approve_outcome_label = QLabel("")
+        self._approve_outcome_label.setWordWrap(True)
+        self._approve_outcome_label.setVisible(False)
+        s3.addWidget(self._approve_outcome_label)
         # --- END MODIFICATION ---
 
         self._outer_splitter = QSplitter(Qt.Vertical)
@@ -683,6 +689,8 @@ class AdvisorView(QWidget):
         self._anomaly_table.currentCellChanged.connect(self._on_anomaly_selected)
         self._provider_combo.currentTextChanged.connect(self._refresh_credential_status)
         self._controller.llm_check_finished.connect(self._on_llm_test_finished)
+        # MODIFIED: surface Approve PASS/FAIL on Step 3, not only bottom log
+        self._controller.experiment_finished.connect(self._on_approve_experiment_finished)
 
     def showEvent(self, event: QShowEvent):
         super().showEvent(event)
@@ -728,6 +736,25 @@ class AdvisorView(QWidget):
         self._refresh_credential_status()
         # MODIFIED: refresh resolved namespace strip after Settings save
         self._sync_ingest_controls_from_settings()
+        # --- START MODIFICATION ---
+        # Re-apply Prom/Loki from disk so Settings Save is not a lie on Step 1.
+        self._reload_observability_urls_from_settings()
+        self._refresh_execution_context()
+        # --- END MODIFICATION ---
+
+    def _reload_observability_urls_from_settings(self) -> None:
+        try:
+            from chaosgen.config.settings import load_settings
+            from chaosgen.schemas.discovery import ObservabilityTool
+
+            settings = load_settings()
+            for hint in settings.hints.observability:
+                if hint.tool == ObservabilityTool.PROMETHEUS and hint.url:
+                    self._prom_url.setText(hint.url)
+                elif hint.tool == ObservabilityTool.LOKI and hint.url:
+                    self._loki_url.setText(hint.url)
+        except Exception as exc:
+            logger.warning("Could not reload observability URLs: %s", exc)
 
     def _resolved_namespace(self) -> str:
         from chaosgen.config.settings import load_settings
@@ -1125,10 +1152,21 @@ class AdvisorView(QWidget):
             settings.features.rolling_window_seconds = self._window_spin.value()
             settings.features.resample_step_seconds = self._step_spin.value()
 
-            settings.ranking.weight_confidence = self._w_conf_slider.value() / 100.0
-            settings.ranking.weight_historical = self._w_hist_slider.value() / 100.0
-            settings.ranking.weight_coverage = self._w_cov_slider.value() / 100.0
-            settings.ranking.weight_safety = self._w_safe_slider.value() / 100.0
+            # --- START MODIFICATION ---
+            # Persist normalized weights (same as UI %) so YAML sum≈1.0 and
+            # load_settings does not warn on every Analyze during demo.
+            raw_w = [
+                self._w_conf_slider.value() / 100.0,
+                self._w_hist_slider.value() / 100.0,
+                self._w_cov_slider.value() / 100.0,
+                self._w_safe_slider.value() / 100.0,
+            ]
+            total_w = sum(raw_w) or 1.0
+            settings.ranking.weight_confidence = raw_w[0] / total_w
+            settings.ranking.weight_historical = raw_w[1] / total_w
+            settings.ranking.weight_coverage = raw_w[2] / total_w
+            settings.ranking.weight_safety = raw_w[3] / total_w
+            # --- END MODIFICATION ---
 
             settings.safety.max_affected_nodes = self._max_affected_nodes.value()
             settings.safety.blocked_namespaces = [
@@ -1687,10 +1725,32 @@ class AdvisorView(QWidget):
             set_semantic_role(self._exec_context_label, "muted")
         # --- END MODIFICATION ---
 
+    def _set_approve_buttons_enabled(self, enabled: bool) -> None:
+        for row in range(self._results_table.rowCount()):
+            widget = self._results_table.cellWidget(row, 3)
+            if widget is not None:
+                widget.setEnabled(enabled)
+
     def _on_approve(self, index: int):
         self._refresh_execution_context()
-        self._controller.approve_and_run(index)
+        # MODIFIED: clear prior outcome so demo does not show stale PASS/FAIL
+        self._approve_outcome_label.setVisible(False)
+        self._approve_outcome_label.setText("")
+        self._set_approve_buttons_enabled(False)
+        if not self._controller.approve_and_run(index):
+            self._set_approve_buttons_enabled(True)
+            return
         self._controller.log_message.emit(f"Approved scenario index={index}")
+
+    def _on_approve_experiment_finished(self, ok: bool, message: str) -> None:
+        """Surface Approve PASS/FAIL on Step 3 (toast + bottom log alone are easy to miss)."""
+        self._set_approve_buttons_enabled(True)
+        if self._stack.currentIndex() != 2:
+            return
+        verdict = "PASS" if ok else "FAIL"
+        self._approve_outcome_label.setText(f"Last Approve: {verdict} — {message}")
+        self._approve_outcome_label.setVisible(True)
+        set_semantic_role(self._approve_outcome_label, "success" if ok else "danger")
 
     def _on_reject_all(self):
         self._controller.reject_all()

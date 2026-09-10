@@ -20,6 +20,17 @@ DEFAULT_LOKI_URL = f"http://{DEFAULT_REGISTRY_IP}:3100"
 
 
 def resolve_prometheus_url(settings: ChaosGenSettings | None = None) -> str:
+    # --- START MODIFICATION ---
+    # When callers omit settings (e.g. orchestrator default SS), load disk so
+    # Approve does not silently fall back to 127.0.0.1 while Settings has lab URLs.
+    if settings is None:
+        try:
+            from chaosgen.config.settings import load_settings
+
+            settings = load_settings()
+        except Exception:
+            settings = None
+    # --- END MODIFICATION ---
     for hint in (settings.hints.observability if settings else []):
         if hint.tool == ObservabilityTool.PROMETHEUS:
             return hint.url.rstrip("/")
@@ -32,6 +43,15 @@ def resolve_prometheus_url(settings: ChaosGenSettings | None = None) -> str:
 
 
 def resolve_loki_url(settings: ChaosGenSettings | None = None) -> str:
+    # --- START MODIFICATION ---
+    if settings is None:
+        try:
+            from chaosgen.config.settings import load_settings
+
+            settings = load_settings()
+        except Exception:
+            settings = None
+    # --- END MODIFICATION ---
     for hint in (settings.hints.observability if settings else []):
         if hint.tool == ObservabilityTool.LOKI:
             return hint.url.rstrip("/")

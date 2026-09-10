@@ -64,6 +64,47 @@ class KubectlChaosModule(BaseChaosModule):
         self._api_server_override: Optional[str] = None
         self._tls_server_name: Optional[str] = None
 
+    def reload_from_config(self, config: Optional[Dict[str, Any]] = None) -> None:
+        """Re-bind instance fields after Settings Save (mod.config alone is not enough)."""
+        # --- START MODIFICATION ---
+        if config is not None:
+            self.config = {**getattr(self, "config", {}), **config}
+        self.kubeconfig = self._expand(self.config.get("kubeconfig"))
+        self.context = self.config.get("context")
+        self.default_namespace = self.config.get("default_namespace", "default")
+        self.dry_run = bool(self.config.get("dry_run", False))
+        self.timeout_s = int(self.config.get("kubectl_timeout_s", 30))
+        self.delete_force_on_timeout = bool(
+            self.config.get("delete_force_on_timeout", True)
+        )
+        self.managed_by = self.config.get("managed_by_label", "chaosgen")
+        self.ephemeral = str(self.config.get("ephemeral_label", "true"))
+        self.client_mode = str(self.config.get("client", "auto") or "auto")
+        self._native = None
+        self.last_backend = None
+        ssh_cfg = self.config.get("ssh_bastion") or {}
+        if not isinstance(ssh_cfg, dict):
+            ssh_cfg = {}
+        self.ssh_enabled = bool(ssh_cfg.get("enabled", False))
+        self.ssh_auto_on_fail = bool(ssh_cfg.get("auto_on_api_fail", True))
+        self.ssh_host = ssh_cfg.get("host")
+        self.ssh_user = ssh_cfg.get("user")
+        self.ssh_port = int(ssh_cfg.get("port") or 22)
+        self.ssh_identity_file = ssh_cfg.get("identity_file")
+        self.ssh_remote_api_host = ssh_cfg.get("remote_api_host") or "127.0.0.1"
+        self.ssh_remote_api_port = int(ssh_cfg.get("remote_api_port") or 6443)
+        self.ssh_local_port = int(ssh_cfg.get("local_port") or 0)
+        self.ssh_skip_tls_verify = bool(ssh_cfg.get("skip_tls_verify", False))
+        if self._tunnel is not None:
+            try:
+                self._tunnel.close()
+            except Exception:
+                pass
+            self._tunnel = None
+        self._api_server_override = None
+        self._tls_server_name = None
+        # --- END MODIFICATION ---
+
     @staticmethod
     def _expand(path: Optional[str]) -> Optional[str]:
         if not path:

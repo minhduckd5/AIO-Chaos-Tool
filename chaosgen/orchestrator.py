@@ -51,6 +51,8 @@ class ChaosOrchestrator:
         self.config_loader = ConfigLoader(config_path) if config_path else ConfigLoader()
         self.modules: Dict[str, BaseChaosModule] = {}
         self._cg_settings = None
+        # MODIFIED: remember settings path so SS/reload do not silently use APPDATA
+        self._settings_path = config_path
         self._run_id: Optional[str] = None
         self.active_manifests: List[Dict[str, Any]] = []
         self.suite_manifests: List[Dict[str, Any]] = []
@@ -168,6 +170,43 @@ class ChaosOrchestrator:
             dest="idle",
             after="_clear_pending",
         )
+
+    def reload_cg_settings(self, config_path: Optional[str] = None) -> None:
+        """
+        Re-read settings.yaml mid-session (GUI Settings Save).
+
+        Without this, Approve/inject keeps the kubeconfig and operator_name
+        snapshot from process start while Advisor/Experiments forms update.
+        """
+        # --- START MODIFICATION ---
+        from chaosgen.config.connect_routing import apply_connect_profile_to_orchestrator
+        from chaosgen.config.settings import load_settings
+        from chaosgen.safety.governance import SafetyPolicy
+
+        path = config_path if config_path is not None else getattr(self, "_settings_path", None)
+        if config_path is not None:
+            self._settings_path = config_path
+        try:
+            self._cg_settings = load_settings(path)
+            safety_policy = SafetyPolicy.from_settings(self._cg_settings.safety)
+        except Exception as exc:
+            self.logger.warning("reload_cg_settings failed: %s", exc)
+            return
+
+        self.blast_radius_controller = BlastRadiusController(safety_policy)
+        inject = getattr(self._cg_settings, "inject", None)
+        hints_env = None
+        if self._cg_settings.hints:
+            env = self._cg_settings.hints.environment
+            hints_env = env.value if hasattr(env, "value") else str(env) if env else None
+        self.translator = ChaosTranslator(
+            inject_settings=inject,
+            hints_environment=hints_env,
+        )
+        self._initialize_modules()
+        apply_connect_profile_to_orchestrator(self)
+        self.logger.info("Reloaded ChaosGen settings from disk")
+        # --- END MODIFICATION ---
 
     def _initialize_modules(self) -> None:
         module_configs = self.config_loader.get_all_modules()
@@ -846,12 +885,24 @@ class ChaosOrchestrator:
 
     def _default_steady_state(self) -> Dict[str, Any]:
         """Prom-based default when form does not hardcode localhost health."""
+        from chaosgen.config.settings import load_settings
         from chaosgen.config.telemetry_endpoints import resolve_prometheus_url
 
+        # --- START MODIFICATION ---
+        # Prefer the orchestrator-bound settings (_cg_settings), refreshed by
+        # reload_cg_settings after Settings Save. Do NOT call bare load_settings()
+        # first — that reads APPDATA and ignores config_path / mid-session reload.
+        settings = self._cg_settings
+        if settings is None:
+            try:
+                settings = load_settings(getattr(self, "_settings_path", None))
+            except Exception:
+                settings = None
         try:
-            prom_url = resolve_prometheus_url()
+            prom_url = resolve_prometheus_url(settings)
         except Exception:
             prom_url = None
+        # --- END MODIFICATION ---
         if not prom_url:
             return {}
         return {
@@ -992,6 +1043,47 @@ class ChaosOrchestrator:
             )
             self.trigger_rollback()
             return
+        # --- END MODIFICATION ---
+
+        # --- START MODIFICATION ---
+        # Soft Settings Save may leave kubeconfig empty/missing — fail loudly
+        # here (not silent ambient kubectl / opaque exception).
+        kube = self.get_module("kubectl-chaos")
+        if kube is not None:
+            kube_path = getattr(kube, "kubeconfig", None)
+            if kube_path and not Path(kube_path).is_file():
+                msg = (
+                    f"Cannot inject: kubeconfig not found at {kube_path}. "
+                    "Set Connect → Kubernetes kubeconfig in Settings and Save."
+                )
+                self.logger.error(msg)
+                self.last_outcome = "FAIL"
+                self._audit_emit(
+                    "inject_started",
+                    outcome="blocked",
+                    notes=f"blocked: {msg}",
+                )
+                self.trigger_rollback()
+                return
+            if not kube_path:
+                default_kube = Path.home() / ".kube" / "config"
+                env_kube = os.environ.get("KUBECONFIG")
+                has_default = bool(env_kube) or default_kube.is_file()
+                if not has_default:
+                    msg = (
+                        "Cannot inject: no kubeconfig configured and no default "
+                        "~/.kube/config (or KUBECONFIG) on this machine. "
+                        "Set Connect → Kubernetes kubeconfig in Settings and Save."
+                    )
+                    self.logger.error(msg)
+                    self.last_outcome = "FAIL"
+                    self._audit_emit(
+                        "inject_started",
+                        outcome="blocked",
+                        notes=f"blocked: {msg}",
+                    )
+                    self.trigger_rollback()
+                    return
         # --- END MODIFICATION ---
 
         inject = self._cg_settings.inject if self._cg_settings else None

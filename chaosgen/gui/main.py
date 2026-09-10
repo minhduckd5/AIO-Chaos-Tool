@@ -274,9 +274,10 @@ class MainWindow(QWidget):
     def _connect_signals(self):
         self._settings_view.settings_saved.connect(self._advisor_view.refresh_credentials)
         # --- START MODIFICATION ---
-        # Settings Save → refresh Experiments connect panels (K8s / Docker)
+        # Settings Save → refresh Experiments connect panels + orchestrator snapshot
         # --- END MODIFICATION ---
         self._settings_view.settings_saved.connect(self._experiments_view.reload_settings)
+        self._settings_view.settings_saved.connect(self.controller.reload_settings_from_disk)
         self._dashboard.navigate_requested.connect(self.navigate_to)
         self._experiments_view.navigate_requested.connect(self.navigate_to)
         self.controller.log_message.connect(self._log_console.append_log)

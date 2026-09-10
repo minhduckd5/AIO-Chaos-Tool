@@ -104,6 +104,23 @@ class SettingsView(QWidget):
         self._perm_warning.setVisible(False)
         root.addWidget(self._perm_warning)
 
+        # --- START MODIFICATION ---
+        # Demo safety: flag localhost / known-dead lab IPs before Save.
+        self._stale_telem_warning = QLabel()
+        self._stale_telem_warning.setObjectName("warningBanner")
+        self._stale_telem_warning.setWordWrap(True)
+        self._stale_telem_warning.setVisible(False)
+        root.addWidget(self._stale_telem_warning)
+        # --- END MODIFICATION ---
+
+        # --- Operator identity (audit A8) ---
+        identity_group = QGroupBox("Operator identity (audit)")
+        identity_form = QFormLayout(identity_group)
+        self._operator_name = QLineEdit()
+        self._operator_name.setPlaceholderText("Required before Approve / inject (A8)")
+        identity_form.addRow("Operator name:", self._operator_name)
+        root.addWidget(identity_group)
+
         # --- Telemetry ---
         telem_group = QGroupBox("Telemetry Endpoints (registry-vm)")
         telem_form = QFormLayout(telem_group)
@@ -111,6 +128,8 @@ class SettingsView(QWidget):
 
         self._prom_url = QLineEdit(DEFAULT_PROMETHEUS_URL)
         self._loki_url = QLineEdit(DEFAULT_LOKI_URL)
+        self._prom_url.textChanged.connect(self._refresh_stale_telem_warning)
+        self._loki_url.textChanged.connect(self._refresh_stale_telem_warning)
         telem_form.addRow("Prometheus URL:", self._prom_url)
         telem_form.addRow("Loki URL:", self._loki_url)
 
@@ -365,6 +384,8 @@ class SettingsView(QWidget):
             self._sync_secret_fields_from_disk()
 
             settings = load_settings()
+            if getattr(settings, "operator_name", None):
+                self._operator_name.setText(settings.operator_name)
             for hint in settings.hints.observability:
                 if hint.tool == ObservabilityTool.PROMETHEUS:
                     self._prom_url.setText(hint.url)
@@ -423,11 +444,33 @@ class SettingsView(QWidget):
 
             self._developer_mode_cb.setChecked(settings.developer_mode)
             self._update_tier_badge()
+            self._refresh_stale_telem_warning()
 
         except Exception as exc:
             logger.warning("Could not load settings: %s", exc)
 
         self._check_permissions()
+
+    def _refresh_stale_telem_warning(self) -> None:
+        """Warn when Prom/Loki look like dead lab IPs or silent localhost defaults."""
+        prom = self._prom_url.text().strip().lower()
+        loki = self._loki_url.text().strip().lower()
+        flags: list[str] = []
+        for label, url in (("Prometheus", prom), ("Loki", loki)):
+            if not url:
+                continue
+            if "127.0.0.1" in url or "localhost" in url:
+                flags.append(f"{label} points at localhost — Ping/Analyze will not reach lab Prom/Loki")
+            if "192.168.31.220" in url:
+                flags.append(
+                    f"{label} uses retired lab IP 192.168.31.220 — expected registry is 10.50.1.220"
+                )
+        if flags:
+            self._stale_telem_warning.setText(" · ".join(dict.fromkeys(flags)))
+            self._stale_telem_warning.setVisible(True)
+        else:
+            self._stale_telem_warning.setVisible(False)
+            self._stale_telem_warning.setText("")
 
     def _apply_form_to_settings(self, settings) -> None:
         from chaosgen.config.settings import AuthConfig, ObservabilityHint
@@ -476,6 +519,9 @@ class SettingsView(QWidget):
             ))
         settings.hints.observability = obs
         settings.developer_mode = self._developer_mode_cb.isChecked()
+        # MODIFIED: persist audit operator so Approve does not surprise mid-demo
+        op = self._operator_name.text().strip()
+        settings.operator_name = op or None
 
         # MODIFIED: persist telemetry pack selection
         pack_key = self._telem_pack_combo.currentData() or "boutique"
@@ -539,15 +585,38 @@ class SettingsView(QWidget):
 
             validation = validate_profile_connect(settings)
             if not validation.ok:
-                QMessageBox.warning(
-                    self,
-                    "Profile validation failed",
-                    "Cannot save — fix the following:\n\n• "
-                    + "\n• ".join(validation.errors),
+                kube_only = all(
+                    "kubeconfig" in err.lower() for err in validation.errors
                 )
-                self._status.setText("Save blocked: connect profile incomplete.")
-                self._status.setStyleSheet(f"color: {Colors.DANGER};")
-                return
+                # --- START MODIFICATION ---
+                # Allow observability/operator save when kubeconfig is the only
+                # gap — still warn; inject will fail clearly later if unset.
+                if kube_only:
+                    reply = QMessageBox.warning(
+                        self,
+                        "Connect profile incomplete",
+                        "Kubeconfig is not set (and no default ~/.kube/config).\n\n"
+                        "Save Prom/Loki + operator anyway? Inject/Approve will "
+                        "fail until kubeconfig is configured.\n\n• "
+                        + "\n• ".join(validation.errors),
+                        QMessageBox.StandardButton.Save
+                        | QMessageBox.StandardButton.Cancel,
+                    )
+                    if reply != QMessageBox.StandardButton.Save:
+                        self._status.setText("Save cancelled: connect profile incomplete.")
+                        self._status.setStyleSheet(f"color: {Colors.DANGER};")
+                        return
+                else:
+                    QMessageBox.warning(
+                        self,
+                        "Profile validation failed",
+                        "Cannot save — fix the following:\n\n• "
+                        + "\n• ".join(validation.errors),
+                    )
+                    self._status.setText("Save blocked: connect profile incomplete.")
+                    self._status.setStyleSheet(f"color: {Colors.DANGER};")
+                    return
+                # --- END MODIFICATION ---
 
             save_settings(settings)
 

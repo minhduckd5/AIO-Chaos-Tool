@@ -144,6 +144,13 @@ class AppController(QObject):
     def get_pending_experiments(self):
         return self.orchestrator.get_pending_experiments()
 
+    def reload_settings_from_disk(self) -> None:
+        """Settings Save → refresh orchestrator snapshot (kubeconfig, operator, safety)."""
+        # MODIFIED: mid-session Settings must reach Approve/inject path
+        reload = getattr(self.orchestrator, "reload_cg_settings", None)
+        if callable(reload):
+            reload()
+
     # ------------------------------------------------------------------
     # Async dispatchers (blocking I/O pushed to QThread)
     # ------------------------------------------------------------------
@@ -196,9 +203,8 @@ class AppController(QObject):
             delay_seconds=delay_seconds,
         )
         worker.signals.finished.connect(
-            lambda result: self.experiment_finished.emit(
-                True,
-                f"Suite completed: {(result or {}).get('outcome', 'done')}",
+            lambda result: self._emit_experiment_finished(
+                result, label="Suite"
             )
         )
         worker.signals.error.connect(
@@ -212,13 +218,9 @@ class AppController(QObject):
         title = kwargs.get("title") or "ctk-experiment"
         self.experiment_started.emit(title)
         worker = AsyncWorker(self.orchestrator.run_ctk_experiment, **kwargs)
+        # MODIFIED: same toast mapping as Approve / suite (last_outcome aware)
         worker.signals.finished.connect(
-            lambda result: self.experiment_finished.emit(
-                bool((result or {}).get("success")) or (result or {}).get("verdict") == "pass",
-                (result or {}).get("message")
-                or (result or {}).get("error")
-                or f"CTK finished — verdict={(result or {}).get('verdict') or 'unknown'}",
-            )
+            lambda result: self._emit_experiment_finished(result, label="CTK")
         )
         worker.signals.error.connect(
             lambda err: self.experiment_finished.emit(False, err)
@@ -318,9 +320,9 @@ class AppController(QObject):
         self.orchestrator.set_audit_context(actor=actor)
         return True
 
-    def approve_and_run(self, index: int):
+    def approve_and_run(self, index: int) -> bool:
         if not self.ensure_audit_actor():
-            return
+            return False
         worker = AsyncWorker(self.orchestrator.approve_and_run, index)
         # --- START MODIFICATION ---
         # Never hardcode success: steady-state abort sets last_outcome=FAIL
@@ -335,6 +337,7 @@ class AppController(QObject):
             lambda err: self.experiment_finished.emit(False, err)
         )
         self._spawn(worker)
+        return True
 
     def _emit_experiment_finished(self, result: Any, *, label: str) -> None:
         """Map orchestrator outcome to experiment_finished(ok, message)."""

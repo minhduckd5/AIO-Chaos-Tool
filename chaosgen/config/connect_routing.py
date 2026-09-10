@@ -125,6 +125,10 @@ def apply_connect_profile_to_orchestrator(orchestrator: Any) -> None:
             continue
         merged = {**getattr(mod, "config", {}), **{k: v for k, v in cfg.items() if v is not None}}
         mod.config = merged
+        # MODIFIED: KubectlChaosModule binds kubeconfig at init — push fields too
+        reload_fn = getattr(mod, "reload_from_config", None)
+        if callable(reload_fn):
+            reload_fn(merged)
 
     arch = architecture_from_settings(settings)
     tier = "P0" if arch in {
