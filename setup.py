@@ -28,6 +28,9 @@ setup(
         "pandas>=2.0.0",
         "numpy>=1.24.0",
         "joblib>=1.3.0",
+        # MODIFIED: required by AnomalyDetector.plot_timeline (CI installs
+        # .[dev,gui], which previously omitted matplotlib despite requirements.txt).
+        "matplotlib>=3.7.0",
         "ollama>=0.3.0",
         "instructor>=1.0.0",
         "Jinja2>=3.1.0",

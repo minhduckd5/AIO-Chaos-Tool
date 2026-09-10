@@ -61,7 +61,23 @@ class TestEnvironmentProbe:
         monkeypatch.chdir(tmp_path)  # no compose file here
         probe = EnvironmentProbe(kubeconfig=str(tmp_path / "no_config"))
 
-        with patch("chaosgen.discovery.environment_probe.EnvironmentProbe._detect_cloud_vm", return_value=None):
+        # MODIFIED: hermetic — GitHub runners expose /var/run/docker.sock even
+        # when cwd has no compose file; stub docker + IMDS so this asserts
+        # the bare-metal branch, not the runner fingerprint.
+        with (
+            patch(
+                "chaosgen.discovery.environment_probe.EnvironmentProbe._detect_cloud_vm",
+                return_value=None,
+            ),
+            patch(
+                "chaosgen.discovery.environment_probe.EnvironmentProbe._is_docker",
+                return_value=False,
+            ),
+            patch(
+                "chaosgen.discovery.environment_probe.EnvironmentProbe._is_kubernetes",
+                return_value=False,
+            ),
+        ):
             result = probe.probe()
 
         assert result.type == EnvironmentType.BARE_METAL
