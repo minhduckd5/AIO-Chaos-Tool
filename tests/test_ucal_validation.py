@@ -39,6 +39,33 @@ class TestSteadyStateValidator:
             )
         assert ok is True
 
+    def test_prometheus_logs_url_before_http(self, caplog):
+        # MODIFIED: wire-level URL must be visible in OUTPUT for Approve diagnosis
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "status": "success",
+            "data": {"result": [{"metric": {}}]},
+        }
+        with (
+            caplog.at_level("INFO", logger="chaosgen.ucal.validation"),
+            patch("chaosgen.ucal.validation.requests.get", return_value=mock_resp) as get,
+        ):
+            ok = SteadyStateValidator().validate(
+                {
+                    "prometheus": {
+                        "url": "http://10.50.1.220:9090",
+                        "query": 'up{job=~".+"}',
+                    }
+                }
+            )
+        assert ok is True
+        get.assert_called_once()
+        assert get.call_args.args[0] == "http://10.50.1.220:9090/api/v1/query"
+        assert any(
+            "Steady-state Prometheus check: url=http://10.50.1.220:9090" in r.message
+            for r in caplog.records
+        )
+
     def test_prometheus_missing_config(self):
         assert SteadyStateValidator().validate({"prometheus": {"url": "http://x"}}) is False
 

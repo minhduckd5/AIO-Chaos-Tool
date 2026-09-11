@@ -384,6 +384,30 @@ class TestCatalogMerge:
         built = promoted[0].build()
         assert built.faults[0].latency == "2000ms"
 
+    def test_delete_and_update_promoted(self, store, promoter):
+        promoter.promote(
+            _description(),
+            _experiment("to-edit"),
+            approved_by="op",
+            verdict=ExperimentVerdict.PASS,
+            name="to-edit",
+        )
+        assert store.update_by_name(
+            "to-edit",
+            new_name="edited-name",
+            description="updated desc",
+            acceptance_criteria={"http_health": "http://x/health"},
+        )
+        names = {r.name for r in store.load_records_safe()}
+        assert "edited-name" in names
+        assert "to-edit" not in names
+        record = next(r for r in store.load_records_safe() if r.name == "edited-name")
+        assert record.description == "updated desc"
+        assert record.acceptance_criteria == {"http_health": "http://x/health"}
+        assert store.delete_by_name("edited-name") is True
+        assert store.delete_by_name("edited-name") is False
+        assert all(r.name != "edited-name" for r in store.load_records_safe())
+
     def test_source_tags_are_correct(self, store, promoter):
         promoter.promote(_description(), _experiment(), approved_by="op", verdict=ExperimentVerdict.PASS)
         entries = ScenarioCatalog(promoted_store=store).get_all(MS)

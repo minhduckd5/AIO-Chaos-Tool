@@ -216,6 +216,22 @@ class TestInjectFailureAndRollback:
             ("rollback", "operator_direct", "success"),
         ]
 
+    def test_no_target_delete_pod_is_fail_not_partial(self, orch: ChaosOrchestrator):
+        """P0: zero-pod inject must not surface as PASS or generic PARTIAL."""
+        orch.translator.translate = lambda _exp: [self._plan("delete_pod")]
+        module = orch.get_module("kubectl-chaos")
+        module.execute = lambda action, params: {
+            "success": False,
+            "no_target": True,
+            "matched_count": 0,
+            "error": "no pods matched selector, nothing injected",
+        }
+
+        orch.run_experiment(_experiment())
+
+        assert orch.last_outcome == "NO_TARGET"
+        assert ("inject_finished", "operator_direct", "failure") in _sequence(orch)
+
     def test_timeout_is_recorded_as_aborted(self, orch: ChaosOrchestrator):
         orch.translator.translate = lambda _exp: [self._plan()]
         module = orch.get_module("kubectl-chaos")

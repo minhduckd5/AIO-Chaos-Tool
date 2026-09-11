@@ -424,14 +424,38 @@ class NativeK8sBackend:
             return self._ok(message="dry-run: delete pod")
         v1 = client.CoreV1Api(self._client())
         try:
+            # --- START MODIFICATION ---
+            # P0 invalid_target_false_pass: 0 matches must not report success.
             if label_selector:
+                sel = _as_selector(label_selector)
+                items = (
+                    v1.list_namespaced_pod(
+                        ns,
+                        label_selector=sel,
+                        _request_timeout=self._timeout(),
+                    ).items
+                    or []
+                )
+                if not items:
+                    return self._fail(
+                        "no pods matched selector, nothing injected",
+                        no_target=True,
+                        matched_count=0,
+                        label_selector=sel,
+                        namespace=ns,
+                    )
                 v1.delete_collection_namespaced_pod(
                     ns,
-                    label_selector=_as_selector(label_selector),
+                    label_selector=sel,
                     grace_period_seconds=0,
                     _request_timeout=self._timeout(),
                 )
-                return self._ok(message=f"deleted pods -l {_as_selector(label_selector)}")
+                return self._ok(
+                    message=f"deleted {len(items)} pod(s) -l {sel}",
+                    matched_count=len(items),
+                    label_selector=sel,
+                    namespace=ns,
+                )
             if pod:
                 try:
                     v1.delete_namespaced_pod(
@@ -441,9 +465,22 @@ class NativeK8sBackend:
                         _request_timeout=self._timeout(),
                     )
                 except ApiException as exc:
-                    if exc.status != 404:
-                        raise
-                return self._ok(message=f"deleted pod {pod}")
+                    if exc.status == 404:
+                        return self._fail(
+                            "no pods matched selector, nothing injected",
+                            no_target=True,
+                            matched_count=0,
+                            pod=pod,
+                            namespace=ns,
+                        )
+                    raise
+                return self._ok(
+                    message=f"deleted pod {pod}",
+                    matched_count=1,
+                    pod=pod,
+                    namespace=ns,
+                )
+            # --- END MODIFICATION ---
         except ApiException as exc:
             return self._fail(str(exc))
         return self._fail("pod name or label_selector required")

@@ -428,11 +428,21 @@ class ScenarioCatalog:
         tag_set = set(tags)
         return [e for e in self._entries if tag_set.issubset(set(e.tags))]
 
+    def iter_all(self) -> list[CatalogEntry]:
+        """Builtin + promoted across all architectures (GUI catalog browser)."""
+        # --- START MODIFICATION ---
+        results = list(self._entries)
+        for arch in ArchitectureType:
+            results.extend(self._promoted(arch))
+        return results
+        # --- END MODIFICATION ---
+
     def search(self, query: str) -> list[CatalogEntry]:
         """Case-insensitive substring search across name, description, and tags."""
         q = query.lower()
+        # MODIFIED: include promoted entries (CRUD / Unknown→Known loop)
         return [
-            e for e in self._entries
+            e for e in self.iter_all()
             if q in e.name.lower()
             or q in e.description.lower()
             or any(q in tag for tag in e.tags)

@@ -114,6 +114,54 @@ def test_native_mode_does_not_fallback():
     assert "missing package" in result["error"]
 
 
+def test_native_delete_pod_zero_match_fails():
+    """P0: 0 pods matched must not report inject success (invalid_target_false_pass)."""
+    import kubernetes.client as k8s_client
+
+    backend = NativeK8sBackend(dry_run=False)
+    v1 = MagicMock()
+    listed = MagicMock()
+    listed.items = []
+    v1.list_namespaced_pod.return_value = listed
+
+    orig = k8s_client.CoreV1Api
+    k8s_client.CoreV1Api = MagicMock(return_value=v1)  # type: ignore[misc]
+    try:
+        result = backend.delete_pod(
+            {
+                "namespace": "default",
+                "label_selector": {"app": "downstream-service-not-real"},
+            }
+        )
+    finally:
+        k8s_client.CoreV1Api = orig  # type: ignore[misc]
+
+    assert result["success"] is False
+    assert result.get("no_target") is True
+    assert result.get("matched_count") == 0
+    assert "nothing injected" in result["error"]
+    v1.delete_collection_namespaced_pod.assert_not_called()
+
+
+def test_native_delete_pod_named_404_fails():
+    from kubernetes.client.rest import ApiException
+    import kubernetes.client as k8s_client
+
+    backend = NativeK8sBackend(dry_run=False)
+    v1 = MagicMock()
+    v1.delete_namespaced_pod.side_effect = ApiException(status=404, reason="Not Found")
+    orig = k8s_client.CoreV1Api
+    k8s_client.CoreV1Api = MagicMock(return_value=v1)  # type: ignore[misc]
+    try:
+        result = backend.delete_pod({"namespace": "default", "pod": "missing-pod"})
+    finally:
+        k8s_client.CoreV1Api = orig  # type: ignore[misc]
+
+    assert result["success"] is False
+    assert result.get("no_target") is True
+    assert "nothing injected" in result["error"]
+
+
 def test_inject_settings_ssh_bastion(tmp_path):
     path = tmp_path / "settings.yaml"
     path.write_text(

@@ -215,15 +215,45 @@ class OllamaProvider(LLMProvider):
     def _get_client(self):
         if self._instructor_client is None:
             import instructor
-            from ollama import Client as OllamaClient  # type: ignore
-            self._instructor_client = instructor.from_ollama(
-                OllamaClient(host=self.base_url),
-                mode=instructor.Mode.JSON,
+            from openai import OpenAI  # type: ignore
+
+            # --- START MODIFICATION ---
+            # instructor>=1.7 removed from_ollama. Prefer OpenAI-compatible
+            # Ollama /v1 so custom base_url is honored without leaking kwargs
+            # into chat.completions.create (from_provider(..., host=) does).
+            mode = instructor.Mode.JSON
+            openai_client = OpenAI(
+                base_url=f"{self.base_url.rstrip('/')}/v1",
+                api_key="ollama",
             )
+            if hasattr(instructor, "from_openai"):
+                self._instructor_client = instructor.from_openai(
+                    openai_client, mode=mode
+                )
+            elif hasattr(instructor, "from_provider"):
+                # Fallback: default localhost Ollama via provider string.
+                self._instructor_client = instructor.from_provider(
+                    f"ollama/{self.model}",
+                    mode=mode,
+                )
+            elif hasattr(instructor, "from_ollama"):
+                from ollama import Client as OllamaClient  # type: ignore
+
+                self._instructor_client = instructor.from_ollama(
+                    OllamaClient(host=self.base_url),
+                    mode=mode,
+                )
+            else:
+                raise ImportError(
+                    "instructor lacks from_openai/from_provider/from_ollama"
+                )
+            # --- END MODIFICATION ---
         return self._instructor_client
 
     def complete(self, system_prompt: str, user_prompt: str, response_model: type) -> Any:
         client = self._get_client()
+        # --- START MODIFICATION ---
+        # Cap Ollama context — default model card ctx (131k) OOMs/hangs on lab GPUs.
         return client.chat.completions.create(
             model=self.model,
             messages=[
@@ -232,8 +262,12 @@ class OllamaProvider(LLMProvider):
             ],
             response_model=response_model,
             temperature=self.temperature,
-            max_retries=0,
+            # Instructor validation feedback (enum/schema) — describer outer
+            # retries alone re-ask without the ValidationError context.
+            max_retries=2,
+            extra_body={"options": {"num_ctx": 8192}},
         )
+        # --- END MODIFICATION ---
 
     def complete_raw(self, system_prompt: str, user_prompt: str) -> dict:
         """Raw HTTP fallback when instructor is unavailable."""
@@ -248,7 +282,10 @@ class OllamaProvider(LLMProvider):
                 ],
                 "format": "json",
                 "stream": False,
-                "options": {"temperature": self.temperature},
+                "options": {
+                    "temperature": self.temperature,
+                    "num_ctx": 8192,
+                },
             },
             timeout=120,
         )

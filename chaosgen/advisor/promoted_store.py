@@ -186,6 +186,63 @@ class PromotedStore:
                 records.append(record)
                 self._write(records)
 
+    def delete_by_name(self, name: str) -> bool:
+        """Remove a promoted scenario by name. Returns True if something was deleted."""
+        # --- START MODIFICATION ---
+        # Catalog GUI CRUD — delete only touches the promoted store, never builtins.
+        target = (name or "").strip()
+        if not target:
+            return False
+        with _GLOBAL_LOCK:
+            with self._file_lock():
+                records = self._load_for_append()
+                kept = [r for r in records if r.name != target]
+                if len(kept) == len(records):
+                    return False
+                self._write(kept)
+                return True
+        # --- END MODIFICATION ---
+
+    def update_by_name(
+        self,
+        name: str,
+        *,
+        new_name: str | None = None,
+        description: str | None = None,
+        acceptance_criteria: Dict[str, Any] | None = None,
+        clear_acceptance: bool = False,
+    ) -> bool:
+        """Update mutable fields of a promoted record. Returns True if found."""
+        # --- START MODIFICATION ---
+        target = (name or "").strip()
+        if not target:
+            return False
+        with _GLOBAL_LOCK:
+            with self._file_lock():
+                records = self._load_for_append()
+                found = False
+                updated: List[PromotedCatalogRecord] = []
+                for record in records:
+                    if record.name != target:
+                        updated.append(record)
+                        continue
+                    found = True
+                    data = record.model_dump(mode="json")
+                    if new_name is not None and new_name.strip():
+                        data["name"] = new_name.strip()
+                    if description is not None:
+                        data["description"] = description
+                    if clear_acceptance:
+                        data["acceptance_criteria"] = None
+                    elif acceptance_criteria is not None:
+                        data["acceptance_criteria"] = acceptance_criteria
+                    updated.append(PromotedCatalogRecord.model_validate(data))
+                if not found:
+                    return False
+                self._write(updated)
+                return True
+        # --- END MODIFICATION ---
+
     def _load_for_append(self) -> List[PromotedCatalogRecord]:
         """Load for append with short retries; avoid quarantine on transient locks."""
         last_exc: Optional[BaseException] = None

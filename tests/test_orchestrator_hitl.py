@@ -1,4 +1,6 @@
 """Tests for the HITL approval gate in ChaosOrchestrator."""
+import json
+
 import pytest
 
 from chaosgen.orchestrator import ChaosOrchestrator
@@ -73,6 +75,44 @@ class TestHITLApprovalGate:
         orch.approve_and_run(1)
         assert orch.current_experiment.name == "ai-exp-1"
 
+    def test_second_approve_after_idle_requeues_pending(self):
+        """Regression: can't trigger approve_experiment from state idle."""
+        orch = ChaosOrchestrator()
+        report = _make_report(2)
+        orch.run_ai_experiment(report)
+        assert orch.state == "pending_approval"
+        # Simulate end-of-run: FSM idle, queue still populated (HITL multi-approve).
+        orch.machine.set_state("idle")
+        assert orch.state == "idle"
+        assert len(orch.pending_experiments) == 2
+        result = orch.approve_and_run(1)
+        assert result.get("ran") is True
+        assert orch.current_experiment.name == "ai-exp-1"
+
+    def test_requeue_emits_queued_audit(self, tmp_path):
+        from chaosgen.storage.audit import AuditStore
+
+        orch = ChaosOrchestrator()
+        audit_path = tmp_path / "audit.jsonl"
+        orch.audit_store = AuditStore(path=audit_path)
+        orch._audit_actor = "tester"
+        orch.run_ai_experiment(_make_report(2))
+        orch.machine.set_state("idle")
+        orch._requeue_pending_after_run()
+        rows = [
+            json.loads(line)
+            for line in audit_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        requeue = [
+            r
+            for r in rows
+            if r.get("event_type") == "queued"
+            and "requeue after prior run" in str(r.get("notes") or "")
+        ]
+        assert len(requeue) == 1
+        assert orch.state == "pending_approval"
+
 
 class TestGatedInjectSafety:
     """G2/G3: inject-time blast radius + dead man's switch arming."""
@@ -94,7 +134,10 @@ class TestGatedInjectSafety:
         assert orch.state == "pending_approval"
         orch.approve_and_run(0)
         assert orch.last_outcome == "FAIL"
-        assert orch.state == "idle"
+        # Queue still holds the blocked scenario — return to pending_approval
+        # so a later Approve/Reject remains possible (multi-HITL).
+        assert orch.state == "pending_approval"
+        assert len(orch.pending_experiments) == 1
 
     def test_execute_injection_revalidates_blast_radius(self):
         orch = ChaosOrchestrator()

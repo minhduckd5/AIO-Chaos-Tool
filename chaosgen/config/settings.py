@@ -242,6 +242,9 @@ class AdvisorSettings(BaseModel):
     confidence_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
     top_n_scenarios: int = Field(default=5, ge=1, le=50)
     describer_max_retries: int = Field(default=2, ge=0, le=10)
+    # MODIFIED: demo narrative pin — prefer these service names when generating
+    # AI experiments (e.g. checkoutservice for blast-radius claim). Empty = no pin.
+    preferred_inject_targets: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

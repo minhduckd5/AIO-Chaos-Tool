@@ -84,17 +84,41 @@ class LLMAdvisor:
         if self._instructor_client is None:
             try:
                 import instructor
-                from ollama import Client as OllamaClient
+                from openai import OpenAI
 
-                self._client = OllamaClient(host=self.base_url)
-                self._instructor_client = instructor.from_ollama(
-                    self._client,
-                    mode=instructor.Mode.JSON,
+                # --- START MODIFICATION ---
+                # instructor>=1.7 removed from_ollama; use OpenAI-compat /v1.
+                mode = instructor.Mode.JSON
+                self._client = OpenAI(
+                    base_url=f"{self.base_url.rstrip('/')}/v1",
+                    api_key="ollama",
                 )
+                if hasattr(instructor, "from_openai"):
+                    self._instructor_client = instructor.from_openai(
+                        self._client, mode=mode
+                    )
+                elif hasattr(instructor, "from_provider"):
+                    self._instructor_client = instructor.from_provider(
+                        f"ollama/{self.model}",
+                        mode=mode,
+                    )
+                elif hasattr(instructor, "from_ollama"):
+                    from ollama import Client as OllamaClient
+
+                    self._client = OllamaClient(host=self.base_url)
+                    self._instructor_client = instructor.from_ollama(
+                        self._client,
+                        mode=mode,
+                    )
+                else:
+                    raise ImportError(
+                        "instructor lacks from_openai/from_provider/from_ollama"
+                    )
+                # --- END MODIFICATION ---
             except ImportError as e:
                 logger.error(
                     "Required packages not installed. "
-                    "Install with: pip install instructor ollama. Error: %s", e
+                    "Install with: pip install instructor ollama openai. Error: %s", e
                 )
                 raise
         return self._instructor_client

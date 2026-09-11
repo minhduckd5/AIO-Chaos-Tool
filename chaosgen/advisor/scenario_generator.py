@@ -30,9 +30,14 @@ class ScenarioGenerator:
         self,
         safety_policy: Optional[SafetyPolicy] = None,
         confidence_threshold: float = 0.6,
+        preferred_inject_targets: Optional[List[str]] = None,
     ):
         self.confidence_threshold = confidence_threshold
         self.blast_radius = BlastRadiusController(safety_policy)
+        # MODIFIED: ordered prefer list for demo narrative (empty = LLM order)
+        self.preferred_inject_targets = [
+            t.strip() for t in (preferred_inject_targets or []) if t and str(t).strip()
+        ]
 
     def generate(
         self,
@@ -44,6 +49,7 @@ class ScenarioGenerator:
         Low-confidence hypotheses are dropped; unsafe experiments are rejected.
         """
         accepted = self._filter_by_confidence(hypotheses)
+        accepted = self._prefer_target_order(accepted)
         experiments: List[ChaosExperiment] = []
 
         for hyp in accepted:
@@ -74,6 +80,31 @@ class ScenarioGenerator:
                 logger.error("Failed to generate experiment from hypothesis: %s", e)
 
         return experiments
+
+    def _prefer_target_order(
+        self, hypotheses: List[FaultHypothesis]
+    ) -> List[FaultHypothesis]:
+        """Stable-sort so preferred_inject_targets appear first (demo pin)."""
+        if not self.preferred_inject_targets:
+            return hypotheses
+        rank = {
+            name.lower(): idx
+            for idx, name in enumerate(self.preferred_inject_targets)
+        }
+
+        def _key(hyp: FaultHypothesis) -> tuple[int, str]:
+            hint = (hyp.target_hint or "").lower()
+            return (rank.get(hint, 10_000), hint)
+
+        ordered = sorted(hypotheses, key=_key)
+        if ordered and rank:
+            top = ordered[0].target_hint
+            if (top or "").lower() in rank:
+                logger.info(
+                    "preferred_inject_targets active; leading experiment target=%s",
+                    top,
+                )
+        return ordered
 
     def _filter_by_confidence(
         self, hypotheses: List[FaultHypothesis]

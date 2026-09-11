@@ -205,6 +205,9 @@ def run_advisor_pipeline(
         generator = scenario_generator or ScenarioGenerator(
             confidence_threshold=effective_confidence,
             safety_policy=SafetyPolicy.from_settings(settings.safety),
+            preferred_inject_targets=list(
+                getattr(settings.advisor, "preferred_inject_targets", None) or []
+            ),
         )
         hypotheses = advisor.interpret_anomalies(
             chaos_summaries,

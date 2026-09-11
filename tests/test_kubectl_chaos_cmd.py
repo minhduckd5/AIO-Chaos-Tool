@@ -306,16 +306,35 @@ class TestApplyAndDelete:
         assert result["success"] is True
 
     def test_delete_pod_by_dict_selector(self, recorder):
-        _module().execute(
+        # Pre-count then delete (P0: refuse zero-match silent success).
+        recorder["responses"].append(_Completed(0, stdout="pod/checkout-abc\n"))
+        recorder["responses"].append(_Completed(0, stdout=""))
+        result = _module().execute(
             "delete_pod", {"label_selector": {"app": "checkout", "tier": "web"}}
         )
-        argv = recorder["calls"][0]
-        assert "app=checkout,tier=web" in argv
-        assert "--wait=false" in argv
+        assert recorder["calls"][0][1] == "get"
+        assert "app=checkout,tier=web" in recorder["calls"][0]
+        assert recorder["calls"][1][1] == "delete"
+        assert "--wait=false" in recorder["calls"][1]
+        assert result["success"] is True
+        assert result["matched_count"] == 1
+
+    def test_delete_pod_zero_match_fails(self, recorder):
+        recorder["responses"].append(_Completed(0, stdout=""))
+        result = _module().execute(
+            "delete_pod", {"label_selector": {"app": "does-not-exist"}}
+        )
+        assert result["success"] is False
+        assert result.get("no_target") is True
+        assert "nothing injected" in result["error"]
+        assert recorder["calls"][0][1] == "get"
+        assert all(c[1] != "delete" for c in recorder["calls"])
 
     def test_delete_pod_by_name(self, recorder):
+        recorder["responses"].append(_Completed(0, stdout="pod/checkout-1\n"))
+        recorder["responses"].append(_Completed(0, stdout=""))
         _module().execute("delete_pod", {"pod": "checkout-1"})
-        assert "checkout-1" in recorder["calls"][0]
+        assert "checkout-1" in recorder["calls"][1]
 
     def test_delete_pod_requires_target(self, recorder):
         result = _module().execute("delete_pod", {})

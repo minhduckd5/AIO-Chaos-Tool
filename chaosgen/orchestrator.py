@@ -130,7 +130,12 @@ class ChaosOrchestrator:
             dest="injecting",
             after="_execute_injection",
         )
-        self.machine.add_transition(trigger="check_failed", source="steady_state_check", dest="idle")
+        self.machine.add_transition(
+            trigger="check_failed",
+            source="steady_state_check",
+            dest="idle",
+            after="_requeue_pending_after_run",
+        )
         self.machine.add_transition(
             trigger="injection_complete",
             source="injecting",
@@ -141,7 +146,7 @@ class ChaosOrchestrator:
             trigger="verification_complete",
             source="verifying",
             dest="idle",
-            after="_cleanup_safety",
+            after="_cleanup_and_requeue_pending",
         )
         self.machine.add_transition(
             trigger="trigger_rollback",
@@ -153,7 +158,7 @@ class ChaosOrchestrator:
             trigger="rollback_complete",
             source="rollback",
             dest="idle",
-            after="_cleanup_safety",
+            after="_cleanup_and_requeue_pending",
         )
         self.machine.add_transition(
             trigger="submit_for_approval", source="idle", dest="pending_approval"
@@ -1004,6 +1009,40 @@ class ChaosOrchestrator:
             self.dead_mans_switch.stop()
             self.dead_mans_switch = None
 
+    def _requeue_pending_after_run(self) -> None:
+        """
+        HITL queue may still hold unapproved scenarios after one run ends in idle.
+
+        Without this, a second Approve raises MachineError:
+        can't trigger event approve_experiment from state idle.
+        """
+        # --- START MODIFICATION ---
+        if self.pending_experiments and self.state == "idle":
+            remaining = len(self.pending_experiments)
+            self.logger.info(
+                "Returning to pending_approval (%d experiment(s) still queued).",
+                remaining,
+            )
+            # A1: re-enter queue must leave an audit `queued` row so multi-Approve
+            # in one session is not a silent FSM hop without evidence.
+            self._audit_path = "ai_hitl"
+            self._audit_emit(
+                "queued",
+                path_used=self._audit_path_override or "ai_hitl",
+                experiment_name=self.pending_experiments[0].name,
+                notes=(
+                    f"requeue after prior run; {remaining} experiment(s) "
+                    "still awaiting approval"
+                ),
+                run_id=None,
+            )
+            self.submit_for_approval()
+        # --- END MODIFICATION ---
+
+    def _cleanup_and_requeue_pending(self) -> None:
+        self._cleanup_safety()
+        self._requeue_pending_after_run()
+
     def _execute_injection(self):
         """Translate faults → ActionPlans → kubectl apply / delete_pod."""
         self.logger.info("Injecting faults...")
@@ -1142,9 +1181,17 @@ class ChaosOrchestrator:
                 result = self.execute_action(plan.tool_name, plan.action, params)
                 if not result.get("success", False):
                     self.logger.error("Injection failed: %s", result)
-                    self.last_outcome = "PARTIAL"
-                    if result.get("timeout") or "timeout" in str(result.get("error", "")).lower():
+                    # --- START MODIFICATION ---
+                    # P0: zero-pod / missing target is a false resilience claim if
+                    # collapsed into PASS (via weak verify) or vague PARTIAL.
+                    err = str(result.get("error") or "").lower()
+                    if result.get("no_target") or "nothing injected" in err:
+                        self.last_outcome = "NO_TARGET"
+                    elif result.get("timeout") or "timeout" in err:
                         self.last_outcome = "INCONCLUSIVE"
+                    else:
+                        self.last_outcome = "PARTIAL"
+                    # --- END MODIFICATION ---
                     self._injecting = False
                     self._audit_emit(
                         "inject_finished",
@@ -1226,6 +1273,14 @@ class ChaosOrchestrator:
                 self.last_outcome = report.verdict.value.upper()
                 if report.verdict.value == "pass":
                     self.logger.info("Verification PASS: %s", report.rationale)
+                    # MODIFIED: blunt depth note when criteria is the weak Prom default
+                    prom = (criteria or {}).get("prometheus") or {}
+                    q = str(prom.get("query") or "")
+                    if 'up{job=~".+"}' in q.replace(" ", "") or "up{job=~\".+\"}" in q:
+                        self.logger.info(
+                            "Verification depth: operator-side Prom default "
+                            'up{job=~".+"} (any series) — not target-health SLA.'
+                        )
                 elif report.verdict.value == "partial":
                     self.logger.warning("Verification PARTIAL: %s", report.rationale)
                 else:
@@ -1249,7 +1304,10 @@ class ChaosOrchestrator:
         else:
             self.last_verdict_report = None
             self.last_outcome = self.last_outcome or "PASS"
-            self.logger.info("No steady_state_check / expectations configured; skipping probes.")
+            self.logger.info(
+                "No steady_state_check / expectations configured; "
+                "skipping probes (Verification PASS by absence of criteria)."
+            )
 
         if self.history_store and self._current_experiment_db_id is not None:
             from datetime import datetime, timezone
@@ -1435,6 +1493,23 @@ class ChaosOrchestrator:
                 "reason": f"invalid experiment index {experiment_index}",
             }
 
+        # --- START MODIFICATION ---
+        # After a prior run the FSM is idle while pending_experiments may still
+        # hold the rest of the AI queue. Re-enter pending_approval before approve.
+        if self.state == "idle":
+            self.submit_for_approval()
+        if self.state != "pending_approval":
+            self.logger.error(
+                "Cannot approve_experiment from state %s (need pending_approval).",
+                self.state,
+            )
+            return {
+                "ran": False,
+                "outcome": None,
+                "reason": f"invalid state {self.state}",
+            }
+        # --- END MODIFICATION ---
+
         # Clear stale PASS from a previous run before this approve cycle.
         self.last_outcome = None
         self.current_experiment = self.pending_experiments[experiment_index]
@@ -1445,8 +1520,8 @@ class ChaosOrchestrator:
         # A1/A4: the approval decision is its own audit row; inject events that
         # follow carry the same run_id.
         self._audit_path = "ai_hitl"
-        if not self._run_id:
-            self._run_id = str(uuid.uuid4())
+        # Fresh run_id per Approve so multi-scenario HITL does not share one id.
+        self._run_id = str(uuid.uuid4())
         self._audit_emit("approved")
         self.approve_experiment()
         return {

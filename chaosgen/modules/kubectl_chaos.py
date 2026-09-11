@@ -434,10 +434,28 @@ class KubectlChaosModule(BaseChaosModule):
         ns = params.get("namespace") or self.default_namespace
         label_selector = params.get("label_selector")
         pod = params.get("pod") or params.get("name")
+        # --- START MODIFICATION ---
+        # P0: refuse silent no-op when selector/name matches zero pods.
         if label_selector:
             if isinstance(label_selector, dict):
                 label_selector = ",".join(f"{k}={v}" for k, v in label_selector.items())
-            return self._run(
+            counted = self._count_pods(
+                {"namespace": ns, "label_selector": str(label_selector)}
+            )
+            if not counted.get("success"):
+                return counted
+            if int(counted.get("count") or 0) == 0:
+                return {
+                    "success": False,
+                    "error": "no pods matched selector, nothing injected",
+                    "no_target": True,
+                    "matched_count": 0,
+                    "label_selector": str(label_selector),
+                    "namespace": ns,
+                    "module": "kubectl-chaos",
+                    "backend": "kubectl",
+                }
+            result = self._run(
                 [
                     "delete",
                     "pod",
@@ -446,13 +464,34 @@ class KubectlChaosModule(BaseChaosModule):
                     "-l",
                     str(label_selector),
                     "--wait=false",
-                    "--ignore-not-found=true",
                 ]
             )
+            result["matched_count"] = int(counted.get("count") or 0)
+            result["no_target"] = False
+            return result
         if pod:
-            return self._run(
-                ["delete", "pod", pod, "-n", ns, "--wait=false", "--ignore-not-found=true"]
+            probe = self._run(
+                ["get", "pod", str(pod), "-n", ns, "-o", "name"],
+                check_dry=False,
             )
+            if not probe.get("success") or not (probe.get("stdout") or "").strip():
+                return {
+                    "success": False,
+                    "error": "no pods matched selector, nothing injected",
+                    "no_target": True,
+                    "matched_count": 0,
+                    "pod": str(pod),
+                    "namespace": ns,
+                    "module": "kubectl-chaos",
+                    "backend": "kubectl",
+                }
+            result = self._run(
+                ["delete", "pod", str(pod), "-n", ns, "--wait=false"]
+            )
+            result["matched_count"] = 1
+            result["no_target"] = False
+            return result
+        # --- END MODIFICATION ---
         return {"success": False, "error": "pod name or label_selector required"}
 
     def _count_pods(self, params: Dict[str, Any]) -> Dict[str, Any]:

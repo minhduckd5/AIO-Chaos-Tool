@@ -37,6 +37,37 @@ class TestBuildProvider:
         with pytest.raises(ValueError, match="Unknown provider"):
             build_provider("badprovider")
 
+    def test_ollama_client_uses_openai_compat_when_from_ollama_missing(self):
+        """P0: instructor 1.14+ dropped from_ollama — use OpenAI-compat /v1."""
+        from types import SimpleNamespace
+
+        from chaosgen.advisor.llm_advisor import OllamaProvider
+
+        fake_client = object()
+        mode = SimpleNamespace(JSON="JSON")
+        inst = SimpleNamespace(
+            Mode=mode,
+            from_openai=MagicMock(return_value=fake_client),
+        )
+        assert not hasattr(inst, "from_ollama")
+
+        fake_openai_mod = MagicMock()
+        fake_openai_cls = MagicMock(return_value=MagicMock(name="OpenAIClient"))
+        fake_openai_mod.OpenAI = fake_openai_cls
+
+        provider = OllamaProvider(model="llama3.2:3b", base_url="http://127.0.0.1:11434")
+        with patch.dict(
+            "sys.modules",
+            {"instructor": inst, "openai": fake_openai_mod},
+        ):
+            client = provider._get_client()
+
+        assert client is fake_client
+        fake_openai_cls.assert_called_once()
+        kwargs = fake_openai_cls.call_args.kwargs
+        assert kwargs["base_url"] == "http://127.0.0.1:11434/v1"
+        inst.from_openai.assert_called_once()
+
     def test_openai_uses_custom_base_url(self):
         from chaosgen.advisor.llm_advisor import OpenAIProvider
 
