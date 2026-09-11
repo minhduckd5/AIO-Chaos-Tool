@@ -553,13 +553,21 @@ class ChaosOrchestrator:
         except Exception:
             pass
 
+        # --- START MODIFICATION ---
+        # Lab-aware fallback: evaluation.fallback_criteria_path or Prom URL
+        # markers (e.g. 10.50.1.220) → lab-boutique; else production demo SLA.
         criteria = acceptance_criteria
         if criteria is None:
-            demo = Path("examples/demo-expectation-criteria.yaml")
-            if demo.is_file():
-                import yaml
+            try:
+                from chaosgen.evaluation.fallback_criteria import (
+                    load_fallback_acceptance_criteria,
+                )
 
-                criteria = yaml.safe_load(demo.read_text(encoding="utf-8")) or None
+                criteria = load_fallback_acceptance_criteria()
+            except Exception as exc:
+                self.logger.warning("CTK fallback criteria load failed: %s", exc)
+                criteria = None
+        # --- END MODIFICATION ---
 
         report = build_verdict_from_ctk_run(
             result,

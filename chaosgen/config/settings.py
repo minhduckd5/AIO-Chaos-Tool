@@ -397,6 +397,29 @@ class HistorySettings(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Evaluation settings (CTK / expectation fallback)
+# ---------------------------------------------------------------------------
+
+
+class EvaluationSettings(BaseModel):
+    """
+    Operational verdict defaults for CTK runs without per-experiment criteria.
+
+    fallback_criteria_path: explicit YAML/JSON (repo-relative or absolute).
+    When unset, resolver picks lab-boutique vs production demo from Prom URL.
+    """
+
+    # --- START MODIFICATION ---
+    # Explicit path preferred for demo honesty; None → auto (lab URL heuristic).
+    fallback_criteria_path: str | None = None
+    # Host/IP fragments that mark the thesis boutique lab (Prom/Loki hints).
+    lab_url_markers: list[str] = Field(
+        default_factory=lambda: ["10.50.1.220"]
+    )
+    # --- END MODIFICATION ---
+
+
+# ---------------------------------------------------------------------------
 # Top-level settings
 # ---------------------------------------------------------------------------
 
@@ -420,6 +443,8 @@ class ChaosGenSettings(BaseModel):
     connect: ConnectSettings = Field(default_factory=ConnectSettings)
     gatekeeper: GatekeeperSettings = Field(default_factory=GatekeeperSettings)
     history: HistorySettings = Field(default_factory=HistorySettings)
+    # MODIFIED: CTK Evaluation fallback criteria (lab vs production-scale)
+    evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
 
 
 # ---------------------------------------------------------------------------

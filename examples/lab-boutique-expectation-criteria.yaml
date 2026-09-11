@@ -1,0 +1,26 @@
+# Lab boutique (microservices-demo) — fixed 1 replica / no HPA
+#
+# Use this for Evaluation on the thesis lab. Do NOT replace
+# examples/demo-expectation-criteria.yaml — that file remains the
+# production-scale reference (threshold >= 2 / autoscaling SLA).
+#
+# Prom / health URLs match docs/demo-day-checklist.md lab truth.
+
+claim: >
+  Under chaos injection, the frontend deployment holds its configured
+  ready capacity (1 replica on this lab) within 45 seconds.
+
+expectations:
+  # Optional http_alive omitted: lab has no stable :8080/health listener
+  # (prior runs always failed that probe and polluted PARTIAL). Add back
+  # when a real frontend health URL is wired in Settings/checklist.
+
+  # Capacity hold — required; matches fixed replicas=1 (no autoscaling)
+  - id: capacity_hold_sla
+    type: prometheus_threshold
+    url: http://10.50.1.220:9090
+    query: sum(kube_deployment_status_replicas_ready{deployment="frontend"})
+    op: ">="
+    threshold: 1
+    window_seconds: 45
+    sample_interval_seconds: 5
