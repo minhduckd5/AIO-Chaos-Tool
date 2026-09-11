@@ -25,7 +25,8 @@ Base commit when this branch was cut: `e121794` (`fix(eval): lab-aware CTK fallb
 | [`chaosgen/storage/`](../chaosgen/storage/) | Audit JSONL, history SQLite, `atomic_io` (locks + append + `iter_jsonl`). |
 | [`chaosgen/schemas/`](../chaosgen/schemas/) | Pydantic models shared across layers. |
 | [`chaosgen/ucal/`](../chaosgen/ucal/) | Environment translator / validation. |
-| [`chaosgen/discovery/`](../chaosgen/discovery/) + [`bootstrap/`](../chaosgen/bootstrap/) | Discovery / observability install (secondary to microservices-lab demo path). |
+| [`chaosgen/discovery/`](../chaosgen/discovery/) | **Alive, not dead.** Hybrid discovery (`run_full_discovery`, `resolve_discovery_report`). Used by CLI `chaosgen discover`, `gui/analysis_pipeline`, `DiscoveryView`, `profile_presets`. Default lab mode sets `DISCOVERY_ENABLED=False` ([`config/scope.py`](../chaosgen/config/scope.py)) → form-first / focused report path; GUI Discovery nav is **hidden** but the package still runs for resolve/preset. |
+| [`chaosgen/bootstrap/`](../chaosgen/bootstrap/) | **Alive, not dead.** `ObservabilityInstaller` + `ConnectionVerifier`. Called from CLI `chaosgen bootstrap` and `DiscoveryView` install path. Secondary to thesis demo (lab already has Prom/Loki) but still a supported entrypoint. |
 
 Graph snapshot (indexed): ~3400 nodes / ~18600 edges; Python-dominant. High fan-in cores: `advisor`, `config`, `schemas`, `telemetry`.
 
@@ -93,15 +94,17 @@ Critical honesty points already hardened on `main`:
 
 ## 4. Coupling inventory (hot spots)
 
-| Coupling | From → To | Risk if broken |
-|---|---|---|
-| HITL approve | GUI controller → `orchestrator.approve_and_run` | False toast / missed audit |
-| Audit actor | GUI A8 → `set_audit_context` → `_audit_emit` | Unattributable trail |
-| Settings live reload | Settings view → `reload_cg_settings` | Stale `chaos_backend` / Prom URL |
-| CTK Evaluation | `run_ctk_experiment` → `_evaluate_ctk_run` → fallback criteria | False FAIL/PASS on SLA |
-| Module inject | Orchestrator → `kubectl_chaos` / CTK modules | Wrong backend (Mesh 404 vs delete_pod) |
-| Catalog promote | Advisor / CLI → `PromotedStore` + catalog | Corrupt/lost Unknown→Known |
-| Verdict UI | Evaluation view ← `%APPDATA%/chaosgen/last_verdict.json` | Stale stakeholder copy |
+Re-verified **2026-09-11** via source/Grep after codebase-memory MCP was unavailable for `index_repository` (connection closed). Claims below match live call sites on this branch tip.
+
+| Coupling | From → To | Evidence (re-check) | Risk if broken |
+|---|---|---|---|
+| HITL approve | GUI controller → `orchestrator.approve_and_run` | `AppController.approve_and_run` → `AsyncWorker(orchestrator.approve_and_run)`; also CLI promote path | False toast / missed audit |
+| Audit actor | GUI A8 → `set_audit_context` → `_audit_emit` | `ensure_audit_actor` → `resolve_actor` → `set_audit_context` | Unattributable trail |
+| Settings live reload | Settings / controller → `reload_cg_settings` | `AppController` calls `orchestrator.reload_cg_settings` after settings save | Stale `chaos_backend` / Prom URL |
+| CTK Evaluation | `run_ctk_experiment` → `_evaluate_ctk_run` → fallback criteria | `orchestrator.py` ~511 / `_evaluate_ctk_run` + `evaluation/fallback_criteria.py` | False FAIL/PASS on SLA |
+| Module inject | Orchestrator → `kubectl_chaos` / CTK modules | `_execute_injection` / `run_ctk_experiment` | Wrong backend (Mesh 404 vs delete_pod) |
+| Catalog promote | Advisor / CLI → `PromotedStore` + catalog | `promoted_store.py` + CLI `promote` | Corrupt/lost Unknown→Known |
+| Verdict UI | Evaluation view ← `%APPDATA%/chaosgen/last_verdict.json` | `report_store.LAST_VERDICT_FILE` | Stale stakeholder copy |
 
 ---
 
@@ -178,6 +181,9 @@ For thesis: describe as **modular monolith with a central orchestrator FSM and a
 
 ---
 
-## 8. Index coverage note
+## 8. Index coverage / re-verify note
 
-Cited paths checked via `check_index_coverage`: no recorded parse issues; several marked `metadata_changed` → refresh index before exhaustive dead-code claims.
+- Initial Phase 0 map used codebase-memory (`get_architecture` / coverage check); several cited paths were `metadata_changed`.
+- **Re-index attempt (before Phase 1):** `user-codebase-memory-mcp` returned connection closed / no callable tools; `mcp_auth` timed out. Could **not** refresh the graph index in this session.
+- **Fallback:** Coupling inventory (section 4) and discovery/bootstrap liveness re-checked with workspace Grep + direct reads of `controller.py`, `orchestrator.py`, `cli.py`, `scope.py`, `main.py`, `experiments_view.py`.
+- Before treating this file as an outsource gold source later: re-run `index_repository` when MCP is healthy and spot-check section 4 again. Phase 1 API scaffold may proceed on the Grep-verified couplings above.

@@ -19,13 +19,22 @@ Open a **new Plan mode** after Phase 1 merges to `main` with gates (a)(b)(c) pas
 
 ## Backend tidy candidates (from Phase 0)
 
-| Candidate | Why | Careful of |
-|---|---|---|
-| Split / facade `ChaosOrchestrator` | God-object FSM + inject + audit + CTK | Qt + CLI call sites |
-| Consolidate dual LLM advisor paths | `advisor/` vs `ml/llm_advisor.py` | Import cycles, tests |
-| Explicit run store (run_id) for history | GUI STARTED orphan debt | History seed / journals |
-| Cross-process inject mutex (optional) | Dual-inject currently operational-only | Windows locks, false sense of safety |
-| Catalog `requires:` tags (chaos_mesh / hpa) | Lab mismatch FAILs | Schema + GUI CRUD batch |
+| Candidate | Status | Why | Careful of |
+|---|---|---|---|
+| Split / facade `ChaosOrchestrator` | Phase 2 | God-object FSM + inject + audit + CTK | Qt + CLI call sites |
+| Consolidate dual LLM advisor paths | Phase 2 | `advisor/` vs `ml/llm_advisor.py` | Import cycles, tests |
+| Explicit run store (`run_id`) for history | **Open bug on PySide6 today — not fixed on `main` / this branch** | History inserts `[STARTED]` then adds a new `[PASSED]/[FAILED]` line; `_seed_history` keeps orphan `[STARTED]` via `_is_session_history_text`. Evidence: [`experiments_view.py`](../chaosgen/gui/views/experiments_view.py) `_on_experiment_done` still only `insertItem` — does **not** update the STARTED row. Web blueprint must model `run_id`; **do not treat this as web-only design** — GUI demo path still shows the bug | History seed / journals / session list |
+| Cross-process inject mutex (optional) | Phase 2+ | Dual-inject currently operational-only | Windows locks, false sense of safety |
+| Catalog `requires:` tags (chaos_mesh / hpa) | Phase 2 | Lab mismatch FAILs | Schema + GUI CRUD batch |
+| discovery / bootstrap | **Not dead code** — keep | CLI `discover`/`bootstrap` + optional GUI when `DISCOVERY_ENABLED`; default False hides nav only | Do not delete as “unused” without checking CLI |
+
+### History `[STARTED]` — known live GUI bug
+
+- **Fixed on main?** No (as of `feat/api-layer-explore` tip / base `e121794`).
+- **Symptom:** After experiment finishes, list still shows `[STARTED] …` plus a separate final line / journal badge.
+- **Root cause (unchanged):** session stub preserved; finish handler does not mutate by `run_id`.
+- **Demo impact:** cosmetic / confusing if committee clicks History; not a false inject outcome if Evaluation/toast are honest.
+- **Fix timing:** prefer a small PySide6 patch on a dedicated branch or Phase 2; not required to unblock Phase 1 API scaffold, but must stay visible in backlog.
 
 ---
 

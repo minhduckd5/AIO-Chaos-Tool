@@ -110,7 +110,7 @@ Rules:
 
 ### `/experiments`
 - Lifecycle tabs: Pending / Injecting / Running / Finished
-- History list (reconcile STARTED→final — known GUI debt; web should model **run_id**)
+- History list (**known live PySide6 bug — not fixed on main:** orphan `[STARTED]` rows; see [`phase2-backlog.md`](phase2-backlog.md). Web should model **run_id** and must not pretend the desktop bug is already gone)
 - Target + fault composer
 - HALT / Open Evaluation
 - Preview experiment JSON
