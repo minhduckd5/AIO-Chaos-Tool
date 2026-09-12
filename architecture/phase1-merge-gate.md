@@ -7,7 +7,7 @@ Do **not** merge to `main` until all of (a)(b)(c) pass. Explore branch does not 
 | Gate | Requirement | Status on this branch |
 |---|---|---|
 | **(a)** | Full `pytest` green with `--cov-fail-under=70`; `chaosgen/api` **not** omitted from coverage | **PASS** — 2026-09-12 local run: `707 passed, 2 skipped`, TOTAL **72.33%**; `chaosgen/api/*` present in report (log: `scratch/phase1_gate_a_pytest.txt`). Skips = `tests/test_secrets.py` POSIX permission checks (`Permission checks skipped on Windows`) — **not** HITL/API. |
-| **(b)** | Core E2E rehearsal under `scratch/prom-loki-fit/` equivalent or better than `main` | Pending |
+| **(b)** | Core E2E rehearsal under `scratch/prom-loki-fit/` equivalent or better than `main` | **PASS** — 2026-09-12 on `feat/api-layer-explore` @ `a5e8998` (see table below) |
 | **(c)** | Manual GUI HITL `delete_pod` confirm (toast matches FSM) | Pending |
 
 ## Dual-inject honesty
@@ -42,14 +42,18 @@ Do **not** merge to `main` until all of (a)(b)(c) pass. Explore branch does not 
 
 Re-run on this branch; results must be **equivalent or better** than current `main`:
 
-| Rehearsal | Evidence file (min) |
-|---|---|
-| Toast / steady-state honesty | `ai_approve_e2e_toast_ss*.json`, `demo_fail_ss_http_health.json` |
-| Settings reload without restart | `settings_save_norestart_e2e.json` |
-| Invalid-target behavior | `invalid_target_p0_fix.json` |
-| Multi-approve audit | `multi_approve_audit_e2e.json` |
+| Rehearsal | Evidence file | Result (2026-09-12) |
+|---|---|---|
+| Toast / SS PASS (3× live delete_pod) | `ai_approve_e2e_toast_ss.json` | `demo_gate_pass=true` |
+| Toast / SS FAIL (bad Prom) | `ai_approve_e2e_toast_ss_fail.json` | `honesty_gate_pass=true` |
+| Demo FAIL http_health | `demo_fail_ss_http_health.json` | `honesty_gate_pass=true` |
+| Settings reload without restart | `settings_save_norestart_e2e.json` | `demo_gate_pass=true` |
+| Invalid-target P0 | `invalid_target_p0_fix.json` | `gate_pass=true` (`NO_TARGET`) |
+| Multi-approve audit (2 names) | `multi_approve_audit_e2e.json` | `gate_pass=true`; both `ran:true` — anti-reapprove does **not** block different names |
 
-Also confirm anti-reapprove does not break multi-HITL of **different** scenario names in the same queue.
+Harness note: `run_ai_approve_e2e_toast_ss.py` now drains via `reject_all()` between cycles (HITL requeue leaves `pending_approval`; each cycle is a fresh generate→approve). Script lives under gitignored `scratch/`.
+
+Also confirm anti-reapprove does not break multi-HITL of **different** scenario names in the same queue. — **confirmed** via `multi_approve_audit_e2e.json`.
 
 ### (c) Manual GUI confirm
 
