@@ -60,11 +60,14 @@ class TestA1AiHitl:
         )
         orch.approve_and_run(0)
 
+        # Trailing queued = intentional requeue after run while pending list still
+        # holds the AI queue item (multi-HITL); not a duplicate of the first queue.
         assert _sequence(orch) == [
             ("queued", "ai_hitl", None),
             ("approved", "ai_hitl", None),
             ("inject_started", "ai_hitl", None),
             ("inject_finished", "ai_hitl", "dry_run"),
+            ("queued", "ai_hitl", None),
         ]
 
     def test_inject_events_share_run_id_with_approval(self, orch: ChaosOrchestrator):

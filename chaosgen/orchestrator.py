@@ -114,6 +114,12 @@ class ChaosOrchestrator:
         # --- END MODIFICATION ---
 
         # --- START MODIFICATION ---
+        # Anti-reapprove: same AI queue must not inject the same experiment name twice.
+        # Discarded on pre-inject abort (_abort_steady_state); cleared on new queue/reject.
+        self._consumed_approvals: set[str] = set()
+        # --- END MODIFICATION ---
+
+        # --- START MODIFICATION ---
         # Form-first inject: operator environment overrides hint/auto-detect
         # --- END MODIFICATION ---
 
@@ -925,66 +931,83 @@ class ChaosOrchestrator:
             }
         }
 
+    def _abort_steady_state(self) -> None:
+        """FAIL before inject: release anti-reapprove token so HITL re-review works."""
+        # --- START MODIFICATION ---
+        if self.current_experiment is not None:
+            self._consumed_approvals.discard(self.current_experiment.name)
+        self.check_failed()
+        # --- END MODIFICATION ---
+
     def _run_steady_state_check(self):
         """Verify system health before starting."""
-        self.logger.info("Running steady-state check...")
-        success = True
-        check = self.current_experiment.steady_state_check
-        if check is None:
-            check = self._default_steady_state()
-            self.current_experiment.steady_state_check = check or None
-
-        try:
-            # MODIFIED: inject-time blast-radius gate (G2) — also re-checked in _execute_injection
-            self.blast_radius_controller.validate_experiment(self.current_experiment)
-        except ValueError as e:
-            self.logger.error("Safety Policy Violation: %s", e)
-            self.last_outcome = "FAIL"
-            self.check_failed()
-            return
-
-        # Pod count vs blast radius (when kubectl-chaos available)
-        kube = self.get_module("kubectl-chaos")
-        if kube and self.current_experiment.target:
-            label_key = "app"
-            if self._cg_settings and self._cg_settings.inject:
-                label_key = self._cg_settings.inject.label_key
-            selector = self.current_experiment.target.selector or {
-                label_key: self.current_experiment.target.name
-            }
-            counted = kube.execute(
-                "count_pods_for_selector",
-                {
-                    "namespace": self.current_experiment.target.namespace
-                    or (self._cg_settings.inject.default_namespace if self._cg_settings else "default"),
-                    "label_selector": selector,
-                },
-            )
-            if counted.get("success") and self._cg_settings:
-                count = int(counted.get("count") or 0)
-                # Soft guard: absolute pod count vs max_affected_nodes * 5 heuristic
-                max_pods = max(1, self._cg_settings.safety.max_affected_nodes * 5)
-                if count > max_pods:
-                    self.logger.error(
-                        "Blast radius: %d pods match selector (cap ~%d)", count, max_pods
-                    )
-                    self.last_outcome = "FAIL"
-                    self.check_failed()
-                    return
-
-        if check:
-            success = self.validator.validate(check)
-
         # --- START MODIFICATION ---
-        # G3: always arm Dead Man's Switch before inject when steady-state path succeeds
-        if success:
-            self._start_dead_mans_switch()
-            self.logger.info("Steady-state check passed.")
-            self.check_passed()
-        else:
-            self.logger.error("Steady-state check failed. Aborting.")
-            self.last_outcome = "FAIL"
-            self.check_failed()
+        # entered_inject: unexpected exceptions before check_passed must not stick
+        # a name in _consumed_approvals forever (residual gap closed in Phase 1 plan).
+        entered_inject = False
+        try:
+            self.logger.info("Running steady-state check...")
+            success = True
+            check = self.current_experiment.steady_state_check
+            if check is None:
+                check = self._default_steady_state()
+                self.current_experiment.steady_state_check = check or None
+
+            try:
+                # MODIFIED: inject-time blast-radius gate (G2) — also re-checked in _execute_injection
+                self.blast_radius_controller.validate_experiment(self.current_experiment)
+            except ValueError as e:
+                self.logger.error("Safety Policy Violation: %s", e)
+                self.last_outcome = "FAIL"
+                self._abort_steady_state()
+                return
+
+            # Pod count vs blast radius (when kubectl-chaos available)
+            kube = self.get_module("kubectl-chaos")
+            if kube and self.current_experiment.target:
+                label_key = "app"
+                if self._cg_settings and self._cg_settings.inject:
+                    label_key = self._cg_settings.inject.label_key
+                selector = self.current_experiment.target.selector or {
+                    label_key: self.current_experiment.target.name
+                }
+                counted = kube.execute(
+                    "count_pods_for_selector",
+                    {
+                        "namespace": self.current_experiment.target.namespace
+                        or (self._cg_settings.inject.default_namespace if self._cg_settings else "default"),
+                        "label_selector": selector,
+                    },
+                )
+                if counted.get("success") and self._cg_settings:
+                    count = int(counted.get("count") or 0)
+                    # Soft guard: absolute pod count vs max_affected_nodes * 5 heuristic
+                    max_pods = max(1, self._cg_settings.safety.max_affected_nodes * 5)
+                    if count > max_pods:
+                        self.logger.error(
+                            "Blast radius: %d pods match selector (cap ~%d)", count, max_pods
+                        )
+                        self.last_outcome = "FAIL"
+                        self._abort_steady_state()
+                        return
+
+            if check:
+                success = self.validator.validate(check)
+
+            # G3: always arm Dead Man's Switch before inject when steady-state path succeeds
+            if success:
+                self._start_dead_mans_switch()
+                self.logger.info("Steady-state check passed.")
+                entered_inject = True
+                self.check_passed()
+            else:
+                self.logger.error("Steady-state check failed. Aborting.")
+                self.last_outcome = "FAIL"
+                self._abort_steady_state()
+        except Exception:
+            if not entered_inject and self.current_experiment is not None:
+                self._consumed_approvals.discard(self.current_experiment.name)
+            raise
         # --- END MODIFICATION ---
 
     def _start_dead_mans_switch(self):
@@ -1470,6 +1493,8 @@ class ChaosOrchestrator:
         self.pending_report = report
         self.pending_experiments = list(report.generated_experiments)
         self._experiment_db_ids = dict(getattr(report, "experiment_db_ids", {}) or {})
+        # MODIFIED: new AI queue resets anti-reapprove tokens
+        self._consumed_approvals = set()
         self.logger.info(
             "Submitted %d AI-generated experiments for approval.",
             len(self.pending_experiments),
@@ -1524,6 +1549,18 @@ class ChaosOrchestrator:
         self._current_experiment_db_id = self._experiment_db_ids.get(
             self.current_experiment.name
         )
+        # --- START MODIFICATION ---
+        # Anti-reapprove: consume experiment name before FSM inject path.
+        name = self.current_experiment.name
+        if name in self._consumed_approvals:
+            self.logger.warning("Already approved this queue: %s", name)
+            return {
+                "ran": False,
+                "outcome": None,
+                "reason": f"already approved this queue: {name}",
+            }
+        self._consumed_approvals.add(name)
+        # --- END MODIFICATION ---
         self.logger.info("Approved experiment: %s", self.current_experiment.name)
         # A1/A4: the approval decision is its own audit row; inject events that
         # follow carry the same run_id.
@@ -1562,6 +1599,8 @@ class ChaosOrchestrator:
         self.pending_report = None
         self._current_experiment_db_id = None
         self._experiment_db_ids = {}
+        # MODIFIED: reject/clear queue also resets anti-reapprove tokens
+        self._consumed_approvals = set()
 
     def get_pending_experiments(self) -> List[ChaosExperiment]:
         """Return the list of experiments awaiting approval."""

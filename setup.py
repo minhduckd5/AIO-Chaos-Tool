@@ -50,6 +50,10 @@ setup(
             "PySide6>=6.5.0",
             "PySide6-Fluent-Widgets>=1.5.0",
         ],
+        "api": [
+            "fastapi>=0.110",
+            "uvicorn[standard]>=0.27",
+        ],
         "dev": [
             "pytest>=7.0",
             "pytest-cov>=4.0",

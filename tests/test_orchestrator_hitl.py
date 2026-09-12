@@ -114,6 +114,99 @@ class TestHITLApprovalGate:
         assert orch.state == "pending_approval"
 
 
+class TestAntiReapproveGuard:
+    """Phase 1: same queue must not inject the same experiment name twice."""
+
+    def test_sequential_double_approve_same_index_blocked(self):
+        orch = ChaosOrchestrator()
+        orch.run_ai_experiment(_make_report(1))
+        assert orch.state == "pending_approval"
+
+        # Fast path past steady-state into inject without cluster I/O.
+        orch.validator.validate = lambda _c: True
+        orch._start_dead_mans_switch = lambda: None
+
+        def _fast_inject():
+            orch.last_outcome = "PASS"
+            orch.injection_complete()
+
+        def _fast_verify():
+            orch.verification_complete()
+
+        orch._execute_injection = _fast_inject
+        orch._run_verification = _fast_verify
+
+        first = orch.approve_and_run(0)
+        assert first.get("ran") is True
+        assert "ai-exp-0" in orch._consumed_approvals
+
+        second = orch.approve_and_run(0)
+        assert second.get("ran") is False
+        assert "already approved this queue" in str(second.get("reason") or "")
+
+    def test_blocked_namespace_discards_token_for_rereview(self):
+        orch = ChaosOrchestrator()
+        bad = ChaosExperiment(
+            name="kube-system-hit",
+            target=TargetSpec(
+                type=TargetType.SERVICE, name="coredns", namespace="kube-system"
+            ),
+            faults=[
+                ProcessFaultSpec(fault_type=FaultType.PROCESS_KILL, duration="10s")
+            ],
+        )
+        orch.run_ai_experiment(
+            AdvisorReport(anomalies_found=1, generated_experiments=[bad])
+        )
+        first = orch.approve_and_run(0)
+        assert first.get("ran") is True
+        assert orch.last_outcome == "FAIL"
+        assert "kube-system-hit" not in orch._consumed_approvals
+
+        # Pre-inject abort released the token — second approve may enter FSM again.
+        second = orch.approve_and_run(0)
+        assert second.get("ran") is True
+        assert "already approved this queue" not in str(second.get("reason") or "")
+
+    def test_unexpected_exception_discards_consumed_token(self):
+        orch = ChaosOrchestrator()
+        orch.run_ai_experiment(_make_report(1))
+        name = orch.pending_experiments[0].name
+
+        def _boom_validate(_exp):
+            raise RuntimeError("unexpected pre-inject failure")
+
+        orch.blast_radius_controller.validate_experiment = _boom_validate
+        with pytest.raises(RuntimeError, match="unexpected pre-inject failure"):
+            orch.approve_and_run(0)
+        assert name not in orch._consumed_approvals
+
+    def test_reject_all_clears_consumed_approvals(self):
+        orch = ChaosOrchestrator()
+        orch.run_ai_experiment(_make_report(1))
+        orch._consumed_approvals.add("ai-exp-0")
+        orch.reject_all()
+        assert orch._consumed_approvals == set()
+
+    def test_clear_pending_clears_consumed_approvals(self):
+        orch = ChaosOrchestrator()
+        orch.run_ai_experiment(_make_report(1))
+        orch._consumed_approvals.add("ai-exp-0")
+        orch._clear_pending()
+        assert orch._consumed_approvals == set()
+
+    def test_run_ai_experiment_clears_consumed_without_clear_pending(self):
+        """Plan #5 second clause: new queue load clears tokens by itself."""
+        orch = ChaosOrchestrator()
+        orch.run_ai_experiment(_make_report(1))
+        orch._consumed_approvals.add("stale-token")
+        # FSM must be idle to accept submit_for_approval; do NOT call _clear_pending.
+        orch.machine.set_state("idle")
+        assert "stale-token" in orch._consumed_approvals
+        orch.run_ai_experiment(_make_report(1))
+        assert orch._consumed_approvals == set()
+
+
 class TestGatedInjectSafety:
     """G2/G3: inject-time blast radius + dead man's switch arming."""
 
@@ -138,6 +231,8 @@ class TestGatedInjectSafety:
         # so a later Approve/Reject remains possible (multi-HITL).
         assert orch.state == "pending_approval"
         assert len(orch.pending_experiments) == 1
+        # MODIFIED: pre-inject FAIL must release anti-reapprove token
+        assert "kube-system-hit" not in orch._consumed_approvals
 
     def test_execute_injection_revalidates_blast_radius(self):
         orch = ChaosOrchestrator()

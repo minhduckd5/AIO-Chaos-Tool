@@ -42,6 +42,7 @@ EventType = Literal[
 ]
 PathUsed = Literal[
     "ai_hitl",
+    "api_hitl",
     "operator_direct",
     "skip_gatekeeper",
     "cli_approve_all_force",

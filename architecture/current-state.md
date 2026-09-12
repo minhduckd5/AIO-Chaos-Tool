@@ -140,6 +140,12 @@ Re-verified **2026-09-11** via source/Grep after codebase-memory MCP was unavail
 
 **Phase 1 policy:** operational rule — do not run `chaosgen api` mutating routes while GUI HITL is active (and vice versa). Document again in merge-gate and demo-day checklist. Cross-process inject mutex is **Phase 2+ / out of scope** unless explicitly escalated.
 
+### In-process API concurrency (Phase 1)
+
+- One `ChaosOrchestrator` per `chaosgen api` process, shared across HTTP requests.
+- Mutating routes serialize on a process-scoped `threading.Lock` (critical section includes `set_audit_context` + orch call).
+- `_consumed_approvals` blocks re-approve of the same experiment **name** in one AI queue; pre-inject FAIL releases the token via `_abort_steady_state`.
+
 ```mermaid
 flowchart TB
   GUI[GUI process Orchestrator A]
@@ -171,19 +177,18 @@ For thesis: describe as **modular monolith with a central orchestrator FSM and a
 
 ---
 
-## 7. Implications for Phase 1 FastAPI (design only — no code yet)
+## 7. Implications for Phase 1 FastAPI
 
-- Wrap **public** orchestrator methods; do not refactor FSM.
-- Mutating routes require `X-Operator-Name` → `set_audit_context` (mirror A8).
+- Wrap **public** orchestrator methods; do not refactor FSM (except surgical `_consumed_approvals` / `_abort_steady_state`).
+- Mutating routes require `X-Operator-Name` → `set_audit_context` (mirror A8) with `path_used=api_hitl`.
 - Audit/verdict reads must reuse `AuditStore` / `iter_jsonl` / `load_verdict_report` — no new JSONL parser.
-- Treat dual-inject as **operational limit** in OpenAPI/docs and merge-gate.
+- Treat dual-inject as **operational limit**; in-process mutating lock + anti-reapprove are mandatory.
 - Prefer tests that keep `chaosgen/api` inside coverage floor before merge to `main`.
 
 ---
 
 ## 8. Index coverage / re-verify note
 
-- Initial Phase 0 map used codebase-memory (`get_architecture` / coverage check); several cited paths were `metadata_changed`.
-- **Re-index attempt (before Phase 1):** `user-codebase-memory-mcp` returned connection closed / no callable tools; `mcp_auth` timed out. Could **not** refresh the graph index in this session.
-- **Fallback:** Coupling inventory (section 4) and discovery/bootstrap liveness re-checked with workspace Grep + direct reads of `controller.py`, `orchestrator.py`, `cli.py`, `scope.py`, `main.py`, `experiments_view.py`.
-- Before treating this file as an outsource gold source later: re-run `index_repository` when MCP is healthy and spot-check section 4 again. Phase 1 API scaffold may proceed on the Grep-verified couplings above.
+- Phase 0 map used codebase-memory; later MCP binary was missing and was reinstalled (`codebase-memory-mcp` 0.10.8).
+- **Re-index (2026-09-12):** project `H-Project-AIO-Chaos-Tool` — **3441 nodes / 18638 edges**, status ready. Coupling inventory (section 4) re-verified against that index; `parse_partial` Jinja/nginx/Dockerfile ranges do not affect Python HITL graph claims.
+- Phase 1 API scaffold proceeds with graph + source evidence for `approve_and_run` / anti-reapprove.

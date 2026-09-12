@@ -1709,6 +1709,31 @@ def status(module, config):
 
 
 # ---------------------------------------------------------------------------
+# api (Phase 1 additive FastAPI sidecar)
+# ---------------------------------------------------------------------------
+
+
+@main.command("api")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Bind address.")
+@click.option("--port", default=8765, show_default=True, type=int, help="Bind port.")
+def api_server(host: str, port: int) -> None:
+    """Run the local HTTP API sidecar (do not dual-inject with the GUI)."""
+    try:
+        import uvicorn
+    except ImportError as exc:
+        raise click.ClickException(
+            "API extras not installed. Run: pip install -e \".[api]\""
+        ) from exc
+
+    click.secho(
+        f"Starting ChaosGen API on http://{host}:{port} "
+        "(mutating routes need X-Operator-Name; do not dual-inject with GUI)",
+        fg="yellow",
+    )
+    uvicorn.run("chaosgen.api.app:app", host=host, port=port, log_level="info")
+
+
+# ---------------------------------------------------------------------------
 # config subgroup
 # ---------------------------------------------------------------------------
 
