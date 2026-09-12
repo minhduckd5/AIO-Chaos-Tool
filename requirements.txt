@@ -29,6 +29,10 @@ kubernetes>=28.1.0
 chaostoolkit==1.19.0
 chaostoolkit-kubernetes==0.39.0
 
+# MODIFIED: Added API Sidecar & Web UI dependencies (Phase 2A)
+fastapi>=0.110
+uvicorn[standard]>=0.27
+
 # Chaos Mesh (in-cluster CRDs used by chaosk8s.chaosmesh.*) is NOT a pip package.
 # Pin the Helm chart / operator version in docs/dependency-pins.md when installing
 # into a lab cluster — keep that pin in sync with chaostoolkit-kubernetes above.

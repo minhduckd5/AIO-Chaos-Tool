@@ -337,17 +337,23 @@ class MainWindow(QWidget):
 
 
     def _on_catalog_scenario_queued(self, experiment, metadata=None) -> None:
-        """Push a catalog scenario into approval queue and stage on Experiments view."""
+        """Push a catalog scenario into approval queue and show on approval table."""
         try:
+            pending_before = list(getattr(self.controller.orchestrator, "pending_experiments", []))
+            if pending_before:
+                dropped = [getattr(e, "name", str(e)) for e in pending_before]
+                self._log_console.append_log(
+                    f"WARNING: replacing {len(dropped)} unapproved scenario(s) "
+                    f"({', '.join(dropped)}) with catalog item — Phase 1 does not merge queues."
+                )
             self.controller.submit_catalog_experiment(experiment)
-            # --- START MODIFICATION ---
-            # Forward GUI-only catalog metadata (architecture / suggested env).
-            # --- END MODIFICATION ---
+            # Stage on Experiments view in case operator wants manual tweaking
             self._experiments_view.load_staged_scenario(experiment, metadata=metadata)
-            self._switch_page(_PAGE_EXPERIMENTS, "Experiments")
-            self._nav.setCurrentItem("experiments")
+            # Route directly to Telemetry / Advisor approval queue table
+            self._switch_page(_PAGE_ADVISOR, "Telemetry & Advisor")
+            self._nav.setCurrentItem("advisor")
             self._log_console.append_log(
-                f"Catalog scenario staged: {getattr(experiment, 'name', 'experiment')}"
+                f"Catalog scenario queued for approval: {getattr(experiment, 'name', 'experiment')}"
             )
         except Exception as exc:
             self._log_console.append_log(f"Error staging scenario: {exc}")

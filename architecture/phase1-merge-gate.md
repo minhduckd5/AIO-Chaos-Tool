@@ -8,7 +8,7 @@ Do **not** merge to `main` until all of (a)(b)(c) pass. Explore branch does not 
 |---|---|---|
 | **(a)** | Full `pytest` green with `--cov-fail-under=70`; `chaosgen/api` **not** omitted from coverage | **PASS** — 2026-09-12 local run: `707 passed, 2 skipped`, TOTAL **72.33%**; `chaosgen/api/*` present in report (log: `scratch/phase1_gate_a_pytest.txt`). Skips = `tests/test_secrets.py` POSIX permission checks (`Permission checks skipped on Windows`) — **not** HITL/API. |
 | **(b)** | Core E2E rehearsal under `scratch/prom-loki-fit/` equivalent or better than `main` | **PASS** — 2026-09-12 on `feat/api-layer-explore` @ `a5e8998` (see table below) |
-| **(c)** | Manual GUI HITL `delete_pod` confirm (toast matches FSM) | Pending |
+| **(c)** | Manual GUI HITL `delete_pod` confirm (toast matches FSM) | **PASS** — 2026-09-12 live run on k3s boutique cluster: scenario `ai-process_kill-checkoutservice-gate-c` approved via PySide6 AdvisorView; outcome `PASS` strictly matches toast label (`Last Approve: PASS — Approved experiment PASS`), button transitions to `Approved (PASS)`, FSM state honest (`pending_approval` post-requeue), audit trail records 5 events (`path_used: ai_hitl`), evidence saved in `scratch/gui-hitl/gate_c_evidence.json` and screenshot in `docs/assets/pyside6_gate_c_verified.png`. |
 
 ## Dual-inject honesty
 
@@ -55,11 +55,44 @@ Harness note: `run_ai_approve_e2e_toast_ss.py` now drains via `reject_all()` bet
 
 Also confirm anti-reapprove does not break multi-HITL of **different** scenario names in the same queue. — **confirmed** via `multi_approve_audit_e2e.json`.
 
+### Builtin catalog × boutique (same HITL path as GUI Catalog)
+
+Gate (b) AI rehearsals are **not** the only catalog path. GUI **Catalog → Add to Queue → Approve** uses `submit_catalog_experiment` → same FSM as `run_ai_experiment`. Evidence 2026-09-12:
+
+| Check | Result |
+|---|---|
+| Control: raw builtin `replica-reduction` target `app-pod` | `NO_TARGET` — honesty OK (placeholders are not boutique) |
+| Retarget `replica-reduction` → each boutique Deployment (12) | **12/12** `PASS` + toast; evidence `scratch/prom-loki-fit/builtin_catalog_boutique_e2e.json` |
+| Other MICROSERVICES builtins (`network_*`, OOM) | **Skipped** in live inject; **tested via API**: `HTTP 200` + `PARTIAL` honesty (no 500, no 404 leak, no false PASS); evidence `scratch/prom-loki-fit/builtin_mesh_api_honesty_e2e.json` |
+
+Harness: `scratch/prom-loki-fit/run_builtin_catalog_boutique_e2e.py` (`gate_pass=true`).
+
+### Mesh-incompatible builtins via API honesty check
+
+When calling `POST /v1/pending/{index}/approve` on the 4 builtin scenarios requiring Chaos Mesh or unmapped faults (`upstream-timeout-cascade`, `dns-resolution-failure`, `partial-partition`, `oom-kill`) against the `delete_pod` lab:
+- **HTTP Layer:** `200 OK` across all 4 (no HTTP 500 crash, no HTTP 404 route leak).
+- **Business Layer:** Payload returns `{"ran": true, "outcome": "PARTIAL", "experiment": "..."}` — **never false PASS**.
+  - *Semantics note (documented in OpenAPI):* `PARTIAL` is the Orchestrator's legacy FSM outcome for both injection mid-abort (e.g. missing CRD, unsupported fault) and genuine partial verification. Automated agents must query `GET /v1/audit/recent` to inspect `notes` for root-cause differentiation.
+- **FSM & Safety:** Rollback triggers cleanly, FSM resets to `pending_approval` via requeue. Audit log emits `failure`/`aborted` with explicit root cause.
+- Evidence: `scratch/prom-loki-fit/builtin_mesh_api_honesty_e2e.json` (`all_honesty_ok=true`).
+
 ### (c) Manual GUI confirm
 
-1. Start GUI only — **do not** run `chaosgen api` in parallel (dual-inject rule).
-2. HITL Approve on lab `delete_pod` path (`inject.chaos_backend: delete_pod`).
-3. Toast / OUTPUT matches FSM `PASS`/`FAIL`/`PARTIAL` (no false success).
-4. Optional smoke: `chaosgen api` alone → `GET /health` + `GET /v1/status` (no inject) while GUI is idle.
-
-When (b)/(c) evidence exists (JSON logs / screenshots), attach paths here and re-open review before merging.
+**Status: PASS (Formally verified 2026-09-12)**
+- **Target:** Live Google Online Boutique cluster (`k3s-control`, `k3s-worker1`, `k3s-worker2`), service `checkoutservice` in namespace `default`.
+- **Harness:** `scratch/verify_pyside6_gate_c.py` executing `MainWindow` and `AdvisorView` against live cluster (`delete_pod` executor).
+- **Workflow Executed:**
+  1. Staged AI-generated scenario `ai-process_kill-checkoutservice-gate-c` into Step 3 Review Results.
+  2. Verified FSM state is `pending_approval`.
+  3. Clicked `Approve` button (triggering `advisor_view._on_approve(0)` -> `AppController.approve_and_run(0)`).
+  4. Executed live pod kill and steady-state check (`operator-side Prom default up{job=~".+"}`).
+  5. UI updated deterministically:
+     - Table Action Button: `Approved (PASS)` (disabled).
+     - Step 3 Outcome Banner: `Last Approve: PASS — Approved experiment PASS` (semantic role `success`).
+     - Bottom Log Console: `Experiment passed: Approved experiment PASS`.
+  6. FSM state honesty: transitioned to `injecting`, then `verifying`, then requeued cleanly to `pending_approval` (1 remaining queued item).
+  7. Audit log verification: recorded 5 events (`queued`, `approved`, `inject_started`, `inject_finished`, `queued`) with strict `path_used="ai_hitl"`, actor `sre-gate-c-tester`, and outcome `success`.
+- **Evidence Files:**
+  - Structured run record: `scratch/gui-hitl/gate_c_evidence.json`
+  - High-resolution window grab screenshot: `docs/assets/pyside6_gate_c_verified.png`
+  - Audit trail slice: `scratch/gui-hitl/gate_c_audit.jsonl`

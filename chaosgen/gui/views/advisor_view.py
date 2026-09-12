@@ -620,9 +620,13 @@ class AdvisorView(QWidget):
 
         # --- Scenarios ---
         self._results_table = QTableWidget()
-        self._results_table.setColumnCount(4)
-        self._results_table.setHorizontalHeaderLabels(["Scenario", "SCI", "Confidence", "Action"])
+        self._results_table.setColumnCount(5)
+        self._results_table.setHorizontalHeaderLabels(["Scenario", "SCI", "Confidence", "Action", "Remove"])
         self._results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self._results_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self._results_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self._results_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self._results_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self._results_table.verticalHeader().setVisible(False)
         self._style_table(self._results_table)
         self._results_table.currentCellChanged.connect(self._on_scenario_selected)
@@ -1326,7 +1330,7 @@ class AdvisorView(QWidget):
             placeholder = QTableWidgetItem(_EMPTY_SCENARIOS_MSG)
             placeholder.setFlags(Qt.ItemIsEnabled)
             self._results_table.setItem(0, 0, placeholder)
-            self._results_table.setSpan(0, 0, 1, 4)
+            self._results_table.setSpan(0, 0, 1, 5)
             return
 
         self._results_table.setRowCount(len(exps))
@@ -1344,6 +1348,11 @@ class AdvisorView(QWidget):
             approve_btn.setObjectName("btnSuccess")
             approve_btn.clicked.connect(lambda _, idx=i: self._on_approve(idx))
             self._results_table.setCellWidget(i, 3, approve_btn)
+
+            remove_btn = QPushButton("Remove")
+            remove_btn.setObjectName("btnDanger")
+            remove_btn.clicked.connect(lambda _, idx=i: self._on_remove_scenario(idx))
+            self._results_table.setCellWidget(i, 4, remove_btn)
 
     def _fill_gatekeeper_table(self, report: AdvisorReport):
         rows = gatekeeper_rows(report)
@@ -1729,7 +1738,24 @@ class AdvisorView(QWidget):
         for row in range(self._results_table.rowCount()):
             widget = self._results_table.cellWidget(row, 3)
             if widget is not None:
-                widget.setEnabled(enabled)
+                if "Approved" in widget.text():
+                    widget.setEnabled(False)
+                else:
+                    widget.setEnabled(enabled)
+            rm_btn = self._results_table.cellWidget(row, 4)
+            if rm_btn is not None:
+                rm_btn.setEnabled(enabled)
+
+    def _on_remove_scenario(self, index: int):
+        self._controller.reject_pending_at(index)
+        if self._current_report:
+            exps = getattr(self._current_report, "generated_experiments", [])
+            if 0 <= index < len(exps):
+                exps.pop(index)
+            self._fill_scenario_table(self._current_report)
+        self._approve_outcome_label.setVisible(False)
+        self._approve_outcome_label.setText("")
+        self._controller.log_message.emit(f"Removed scenario index={index}")
 
     def _on_approve(self, index: int):
         self._refresh_execution_context()
@@ -1737,13 +1763,26 @@ class AdvisorView(QWidget):
         self._approve_outcome_label.setVisible(False)
         self._approve_outcome_label.setText("")
         self._set_approve_buttons_enabled(False)
+        self._last_approved_index = index
+        btn = self._results_table.cellWidget(index, 3)
+        if btn is not None:
+            btn.setText("Running...")
         if not self._controller.approve_and_run(index):
             self._set_approve_buttons_enabled(True)
+            if btn is not None:
+                btn.setText("Approve")
             return
         self._controller.log_message.emit(f"Approved scenario index={index}")
 
     def _on_approve_experiment_finished(self, ok: bool, message: str) -> None:
         """Surface Approve PASS/FAIL on Step 3 (toast + bottom log alone are easy to miss)."""
+        idx = getattr(self, "_last_approved_index", None)
+        if idx is not None and idx < self._results_table.rowCount():
+            btn = self._results_table.cellWidget(idx, 3)
+            if btn is not None:
+                verdict = "PASS" if ok else "FAIL"
+                btn.setText(f"Approved ({verdict})")
+                btn.setEnabled(False)
         self._set_approve_buttons_enabled(True)
         if self._stack.currentIndex() != 2:
             return

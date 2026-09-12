@@ -41,3 +41,41 @@ def require_operator_name(
 OrchestratorDep = Annotated[ChaosOrchestrator, Depends(get_orchestrator)]
 MutatingLockDep = Annotated[threading.Lock, Depends(get_mutating_lock)]
 OperatorDep = Annotated[str, Depends(require_operator_name)]
+
+
+class MutatingContext:
+    """
+    Context manager encapsulating the mutating lock, operator validation,
+    and audit context setting.
+    """
+
+    def __init__(
+        self,
+        orch: ChaosOrchestrator,
+        lock: threading.Lock,
+        operator: str,
+        path_used: str = "api_hitl",
+    ):
+        self.orch = orch
+        self.lock = lock
+        self.operator = operator
+        self.path_used = path_used
+
+    def __enter__(self) -> MutatingContext:
+        self.lock.acquire()
+        self.orch.set_audit_context(actor=self.operator, path_used=self.path_used)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.lock.release()
+
+
+def get_mutating_context(
+    orch: OrchestratorDep,
+    lock: MutatingLockDep,
+    operator: OperatorDep,
+) -> MutatingContext:
+    return MutatingContext(orch, lock, operator)
+
+
+MutatingContextDep = Annotated[MutatingContext, Depends(get_mutating_context)]

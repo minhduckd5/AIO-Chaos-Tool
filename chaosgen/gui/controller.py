@@ -285,12 +285,23 @@ class AppController(QObject):
     def submit_catalog_experiment(self, experiment):
         from chaosgen.schemas.scenarios import AdvisorReport
 
+        pending_before = list(getattr(self.orchestrator, "pending_experiments", []))
+        if pending_before:
+            dropped = [getattr(e, "name", str(e)) for e in pending_before]
+            self.logger.warning(
+                "Replacing %d unapproved scenario(s) (%s) with catalog item '%s' — Phase 1 does not merge queues.",
+                len(dropped),
+                ", ".join(dropped),
+                getattr(experiment, "name", str(experiment)),
+            )
+
         report = AdvisorReport(
             anomalies_found=0,
             generated_experiments=[experiment],
         )
         self.orchestrator.run_ai_experiment(report)
         self.state_changed.emit(self.state)
+        self.advisor_finished.emit(report)
 
     # ------------------------------------------------------------------
     # Audit actor (A8)
@@ -353,6 +364,13 @@ class AppController(QObject):
             return
         self.orchestrator.reject_all()
         self.state_changed.emit(self.state)
+
+    def reject_pending_at(self, index: int) -> bool:
+        if not self.ensure_audit_actor():
+            return False
+        ok = self.orchestrator.reject_pending_at(index)
+        self.state_changed.emit(self.state)
+        return ok
 
     def trigger_rollback(self):
         # --- START MODIFICATION ---

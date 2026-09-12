@@ -738,14 +738,21 @@ class ChaosOrchestrator:
         # inside _execute_injection already belong to the FSM inject chain.
         external = not self._injecting
         label = f"{module_name}.{action}"
+        action_run_id = f"act-{uuid.uuid4().hex[:8]}" if external else None
         if external:
             self._audit_emit(
-                "hatch_used", path_used="module_direct", notes=label
+                "hatch_used",
+                path_used="module_direct",
+                notes=label,
+                experiment_name=label,
+                run_id=action_run_id,
             )
             self._audit_emit(
                 "inject_started",
                 path_used="module_direct",
                 notes=label,
+                experiment_name=label,
+                run_id=action_run_id,
                 target_cluster_context=self._audit_target_context(),
             )
         try:
@@ -757,6 +764,8 @@ class ChaosOrchestrator:
                 "inject_finished",
                 path_used="module_direct",
                 notes=label,
+                experiment_name=label,
+                run_id=action_run_id,
                 outcome=self._outcome_from_result(result),
             )
         return result
@@ -1507,7 +1516,10 @@ class ChaosOrchestrator:
             experiment_name=self.pending_experiments[0].name,
             notes=f"{len(self.pending_experiments)} experiment(s) awaiting approval",
         )
-        self.submit_for_approval()
+        # Only transition idle -> pending_approval; if already in pending_approval,
+        # replacing the pending queue preserves the state without MachineError.
+        if self.state == "idle":
+            self.submit_for_approval()
 
     def approve_and_run(self, experiment_index: int = 0) -> Dict[str, Any]:
         """Approve a specific pending experiment and execute it.
@@ -1592,6 +1604,36 @@ class ChaosOrchestrator:
                 notes=f"{len(self.pending_experiments)} experiment(s) rejected",
             )
             self.reject_experiment()
+
+    def reject_pending_at(self, experiment_index: int = 0) -> bool:
+        """Reject a specific pending experiment from the queue.
+
+        If it was the last experiment in pending_experiments, transitions FSM to idle.
+        Returns True if removed, False if index invalid or queue empty.
+        """
+        if not self.pending_experiments:
+            self.logger.warning("No pending experiments to reject.")
+            return False
+
+        if experiment_index < 0 or experiment_index >= len(self.pending_experiments):
+            self.logger.error("Invalid experiment index to reject: %d", experiment_index)
+            return False
+
+        exp = self.pending_experiments.pop(experiment_index)
+        self._consumed_approvals.discard(exp.name)
+        self._experiment_db_ids.pop(exp.name, None)
+
+        self._audit_emit(
+            "rejected",
+            path_used=self._audit_path_override or "ai_hitl",
+            experiment_name=exp.name,
+            notes=f"experiment '{exp.name}' rejected by operator",
+        )
+        self.logger.info("Rejected pending experiment [%d]: %s", experiment_index, exp.name)
+
+        if not self.pending_experiments and self.state == "pending_approval":
+            self.reject_experiment()
+        return True
 
     def _clear_pending(self) -> None:
         """Clear the pending experiments queue."""

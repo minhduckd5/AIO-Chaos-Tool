@@ -69,7 +69,8 @@ instance/
 .scrapy
 
 # Local knowledge base (thesis drafts, lab notes, personal/academic) — publish when complete
-docs/
+docs/*
+!docs/assets/
 
 # PyBuilder
 .pybuilder/
@@ -290,6 +291,8 @@ Desktop.ini
 chaostoolkit.log
 journal.json
 experiment.json
+discovery.json
+generated_scenarios/
 
 # Generated diagram visual-check screenshots & harness
 **/visual-check*.png

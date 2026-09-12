@@ -206,6 +206,43 @@ class TestAntiReapproveGuard:
         orch.run_ai_experiment(_make_report(1))
         assert orch._consumed_approvals == set()
 
+    def test_run_ai_experiment_replaces_queue_while_pending_approval(self):
+        """Calling run_ai_experiment while already pending_approval must not raise MachineError."""
+        orch = ChaosOrchestrator()
+        orch.run_ai_experiment(_make_report(1))
+        assert orch.state == "pending_approval"
+        assert len(orch.pending_experiments) == 1
+        assert orch.pending_experiments[0].name == "ai-exp-0"
+
+        # Re-submitting a new report (e.g. user selected another catalog item) succeeds
+        report2 = _make_report(2)
+        orch.run_ai_experiment(report2)
+        assert orch.state == "pending_approval"
+        assert len(orch.pending_experiments) == 2
+        assert orch.pending_experiments[0].name == "ai-exp-0"
+        assert orch.pending_experiments[1].name == "ai-exp-1"
+
+    def test_reject_pending_at_single_item(self):
+        orch = ChaosOrchestrator()
+        orch.run_ai_experiment(_make_report(2))
+        assert len(orch.pending_experiments) == 2
+
+        # Invalid index
+        assert orch.reject_pending_at(-1) is False
+        assert orch.reject_pending_at(5) is False
+        assert len(orch.pending_experiments) == 2
+
+        # Reject index 0: removes first, 1 remaining, stays in pending_approval
+        assert orch.reject_pending_at(0) is True
+        assert len(orch.pending_experiments) == 1
+        assert orch.pending_experiments[0].name == "ai-exp-1"
+        assert orch.state == "pending_approval"
+
+        # Reject remaining item: queue empty -> transitions to idle
+        assert orch.reject_pending_at(0) is True
+        assert len(orch.pending_experiments) == 0
+        assert orch.state == "idle"
+
 
 class TestGatedInjectSafety:
     """G2/G3: inject-time blast radius + dead man's switch arming."""

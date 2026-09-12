@@ -39,10 +39,12 @@ EventType = Literal[
     "inject_finished",
     "rollback",
     "hatch_used",
+    "orphan_sweep",
 ]
 PathUsed = Literal[
     "ai_hitl",
     "api_hitl",
+    "api_config",
     "operator_direct",
     "skip_gatekeeper",
     "cli_approve_all_force",
